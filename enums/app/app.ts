@@ -37,6 +37,15 @@ export enum ApiEndpoints {
     INVOICES = '/invoices',
 }
 
+/** Documented invoice lifecycle statuses (forward-only in the admin UI) */
+export enum InvoiceStatus {
+    AWAITING_FULFILLMENT = 'AWAITING_FULFILLMENT',
+    ON_HOLD = 'ON_HOLD',
+    AWAITING_SHIPMENT = 'AWAITING_SHIPMENT',
+    SHIPPED = 'SHIPPED',
+    COMPLETED = 'COMPLETED',
+}
+
 /** Storage state file paths */
 export enum StorageStatePaths {
     APP = '.auth/app/appStorageState.json',

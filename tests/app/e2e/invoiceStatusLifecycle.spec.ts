@@ -1,6 +1,6 @@
 import { z } from 'zod/v4';
 import { expect, test } from '../../../fixtures/pom/test-options';
-import { ApiEndpoints } from '../../../enums/app/app';
+import { ApiEndpoints, InvoiceStatus } from '../../../enums/app/app';
 
 /**
  * Invoice status lifecycle: seeds an invoice via the API as admin, then
@@ -31,10 +31,12 @@ test.describe('admin invoice status lifecycle', () => {
         'should transition a freshly seeded invoice to a new status via the admin UI',
         { tag: '@e2e' },
         async ({ seededInvoice, adminOrderEditPage, apiRequest }) => {
-            const NEW_STATUS = 'ON_HOLD';
+            const NEW_STATUS = InvoiceStatus.ON_HOLD;
 
             await test.step('GIVEN an invoice has been seeded via the API as admin', async () => {
-                expect(seededInvoice.status).toBe('AWAITING_FULFILLMENT');
+                expect(seededInvoice.status).toBe(
+                    InvoiceStatus.AWAITING_FULFILLMENT
+                );
             });
 
             await test.step('WHEN the admin opens the invoice in the admin UI', async () => {

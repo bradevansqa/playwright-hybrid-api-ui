@@ -1,5 +1,5 @@
-import { expect, Locator, Page } from '@playwright/test';
-import { AppRoutes } from '../../enums/app/app';
+import type { Locator, Page } from '@playwright/test';
+import { AppRoutes, InvoiceStatus } from '../../enums/app/app';
 
 /**
  * Page Object for the admin "Edit Order" screen
@@ -75,12 +75,11 @@ export class AdminOrderEditPage {
      * Note: the dropdown only allows forward transitions -- the current
      * status and any earlier status in the lifecycle are disabled options.
      *
-     * @param {string} status - One of the documented invoice statuses
-     *   (`AWAITING_FULFILLMENT`, `ON_HOLD`, `AWAITING_SHIPMENT`, `SHIPPED`,
-     *   `COMPLETED`) that is later than the invoice's current status.
+     * @param {InvoiceStatus} status - The invoice status to transition to;
+     *   must be later than the invoice's current status.
      * @returns {Promise<void>} Resolves when the form has been submitted.
      */
-    async updateStatus(status: string): Promise<void> {
+    async updateStatus(status: InvoiceStatus): Promise<void> {
         await this.statusSelect.selectOption(status);
         await Promise.all([
             this.page.waitForResponse(
@@ -93,19 +92,5 @@ export class AdminOrderEditPage {
             ),
             this.updateStatusButton.click(),
         ]);
-    }
-
-    /**
-     * Transitions the invoice to a new status and verifies the dropdown
-     * reflects the change. The app shows no toast/success message for this
-     * action (see Feedback Locators above), so the select's own selected
-     * value is the success signal.
-     *
-     * @param {string} status - One of the documented invoice statuses.
-     * @returns {Promise<void>} Resolves when the new status is confirmed.
-     */
-    async updateStatusAndVerify(status: string): Promise<void> {
-        await this.updateStatus(status);
-        await expect(this.statusSelect).toHaveValue(status);
     }
 }
