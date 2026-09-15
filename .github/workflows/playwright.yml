@@ -26,8 +26,8 @@ jobs:
         env:
             APP_URL: https://practicesoftwaretesting.com
             API_URL: https://api.practicesoftwaretesting.com
-            APP_EMAIL: customer@practicesoftwaretesting.com
-            APP_PASSWORD: welcome01
+            APP_EMAIL: admin@practicesoftwaretesting.com
+            APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
         steps:
             - uses: actions/checkout@v7
 
