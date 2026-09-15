@@ -21,6 +21,8 @@ export enum Messages {
 /** UI route paths */
 export enum AppRoutes {
     LOGIN = '/auth/login',
+    /** Base path -- requires an invoice id appended, e.g. `${ADMIN_ORDER_EDIT}/${invoiceId}` */
+    ADMIN_ORDER_EDIT = '/admin/orders/edit',
 }
 
 /** API endpoint paths */
@@ -29,6 +31,10 @@ export enum ApiEndpoints {
     LOGOUT = '/users/logout',
     CURRENT_USER = '/users/me',
     REGISTER = '/users/register',
+    PRODUCTS = '/products',
+    CARTS = '/carts',
+    POSTCODE_LOOKUP = '/postcode-lookup',
+    INVOICES = '/invoices',
 }
 
 /** Storage state file paths */
