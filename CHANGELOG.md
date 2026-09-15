@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to toolshop are documented here.
+All notable changes to playwright-hybrid-api-ui are documented here.
 
 ---
 

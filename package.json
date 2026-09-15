@@ -1,8 +1,8 @@
 {
-    "name": "toolshop",
+    "name": "playwright-hybrid-api-ui",
     "version": "0.1.0",
     "private": true,
-    "description": "toolshop — Playwright test automation, scaffolded by create-agentic-playwright.",
+    "description": "playwright-hybrid-api-ui — Playwright test automation, scaffolded by create-agentic-playwright.",
     "scripts": {
         "test": "npx playwright test --grep-invert @destructive",
         "test:chromium": "npx playwright test --project=chromium --grep-invert @destructive",
