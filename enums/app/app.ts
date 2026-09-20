@@ -62,6 +62,39 @@ export enum InvoiceStatus {
     COMPLETED = 'COMPLETED',
 }
 
+/**
+ * Product category display names, exactly as rendered in the home-page
+ * filter sidebar -- every value verified live via playwright-cli.
+ *
+ * The first three are top-level categories; the rest are the sub-categories
+ * of Hand Tools, which the sidebar nests underneath it.
+ */
+export enum ProductCategories {
+    HAND_TOOLS = 'Hand Tools',
+    POWER_TOOLS = 'Power Tools',
+    OTHER = 'Other',
+    HAMMER = 'Hammer',
+    HAND_SAW = 'Hand Saw',
+    WRENCH = 'Wrench',
+    SCREWDRIVER = 'Screwdriver',
+    PLIERS = 'Pliers',
+    CHISELS = 'Chisels',
+    MEASURES = 'Measures',
+}
+
+/**
+ * Category slugs accepted by `GET /products?by_category_slug=`.
+ *
+ * Only the slugs the suite actually queries are listed. Note that
+ * `by_category=` and `categories=` are **silently ignored** by the API --
+ * they return the full unfiltered set rather than an error, so a typo in the
+ * parameter name yields a test that passes for the wrong reason.
+ */
+export enum ProductCategorySlugs {
+    HAND_TOOLS = 'hand-tools',
+    CHISELS = 'chisels',
+}
+
 /** Storage state file paths, one per authenticated role */
 export enum StorageStatePaths {
     ADMIN = '.auth/app/adminStorageState.json',

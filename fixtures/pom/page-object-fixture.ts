@@ -3,6 +3,7 @@ import { AppPage } from '../../pages/app/app.page';
 import { AdminOrderEditPage } from '../../pages/app/adminOrderEdit.page';
 import { AdminProductAddPage } from '../../pages/app/adminProductAdd.page';
 import { AdminDashboardPage } from '../../pages/app/adminDashboard.page';
+import { ProductsPage } from '../../pages/app/products.page';
 
 /**
  * Framework fixtures for page objects.
@@ -17,6 +18,8 @@ export type FrameworkFixtures = {
     adminProductAddPage: AdminProductAddPage;
     /** Admin dashboard page object */
     adminDashboardPage: AdminDashboardPage;
+    /** Home / product-listing page object */
+    productsPage: ProductsPage;
     resetStorageState: () => Promise<void>;
 };
 
@@ -49,6 +52,10 @@ export const test = base.extend<FrameworkFixtures>({
 
     adminDashboardPage: async ({ page }, use) => {
         await use(new AdminDashboardPage(page));
+    },
+
+    productsPage: async ({ page }, use) => {
+        await use(new ProductsPage(page));
     },
 
     resetStorageState: async ({ context }, use) => {
