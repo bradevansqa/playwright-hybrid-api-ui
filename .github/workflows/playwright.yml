@@ -28,6 +28,11 @@ jobs:
             API_URL: https://api.practicesoftwaretesting.com
             APP_EMAIL: admin@practicesoftwaretesting.com
             APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+            # Role-based access tests need a non-admin account too. Falls back
+            # to APP_PASSWORD because both demo accounts share one password;
+            # add a CUSTOMER_PASSWORD secret and it takes over automatically.
+            CUSTOMER_EMAIL: customer@practicesoftwaretesting.com
+            CUSTOMER_PASSWORD: ${{ secrets.CUSTOMER_PASSWORD || secrets.APP_PASSWORD }}
         steps:
             - uses: actions/checkout@v7
 
@@ -47,6 +52,8 @@ jobs:
                     echo "API_URL=$API_URL"
                     echo "APP_EMAIL=$APP_EMAIL"
                     echo "APP_PASSWORD=$APP_PASSWORD"
+                    echo "CUSTOMER_EMAIL=$CUSTOMER_EMAIL"
+                    echo "CUSTOMER_PASSWORD=$CUSTOMER_PASSWORD"
                   } > env/.env.dev
 
             - name: Install Playwright browser

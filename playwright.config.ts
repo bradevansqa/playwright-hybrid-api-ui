@@ -1,6 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
 import dotenv from 'dotenv';
-import { StorageStatePaths } from './enums/app/app';
 
 /**
  * Load environment variables from .env file.
@@ -95,7 +94,13 @@ export default defineConfig({
             testIgnore: /.*\/api\/.*\.spec\.ts/,
             use: {
                 ...devices['Desktop Chrome'],
-                storageState: StorageStatePaths.APP,
+                /*
+                 * storageState is intentionally NOT set here: the `role`
+                 * fixture (fixtures/role/role-fixture.ts) derives it from the
+                 * role a spec runs as, defaulting to admin. Setting it here
+                 * too would be a second source of truth that the fixture
+                 * silently overrides.
+                 */
                 viewport: { width: 1920, height: 1080 },
             },
             dependencies: ['setup'],
@@ -106,7 +111,7 @@ export default defineConfig({
         //     name: 'firefox',
         //     use: {
         //         ...devices['Desktop Firefox'],
-        //         storageState: '.auth/app/appStorageState.json',
+        //         // storageState comes from the `role` fixture -- do not set it here
         //     },
         //     dependencies: ['setup'],
         // },
@@ -116,7 +121,7 @@ export default defineConfig({
         //     name: 'webkit',
         //     use: {
         //         ...devices['Desktop Safari'],
-        //         storageState: '.auth/app/appStorageState.json',
+        //         // storageState comes from the `role` fixture -- do not set it here
         //     },
         //     dependencies: ['setup'],
         // },

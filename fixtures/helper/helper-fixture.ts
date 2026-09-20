@@ -252,5 +252,20 @@ export const test = base.extend<HelperFixtures>({
         // and persists a backward status transition without complaint.
         expect(revertStatus).toBe(200);
         expect(revertBody).toEqual({ success: true });
+
+        // Confirm the revert was actually persisted rather than trusting the
+        // PUT's own echoed response -- a silent no-op here would leave the
+        // invoice in the wrong status for whichever test runs against it next.
+        const { status: verifyStatus, body: verifyBody } = await apiRequest({
+            request,
+            method: 'GET',
+            url: `${ApiEndpoints.INVOICES}/${invoice.id}`,
+            baseUrl: process.env.API_URL,
+            headers: process.env.ACCESS_TOKEN,
+        });
+
+        expect(verifyStatus).toBe(200);
+        const revertedInvoice = SeededInvoiceSchema.parse(verifyBody);
+        expect(revertedInvoice.status).toBe(invoice.status);
     },
 });

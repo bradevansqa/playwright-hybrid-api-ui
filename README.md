@@ -104,11 +104,12 @@ The hook checks structure: selector priority, no `any`, strict schemas, no hard 
 
 **Shared state.** Tests run against a public instance other people also use, so data is not guaranteed to be stable between runs.
 
+**Logins can return the wrong user's session.** Roughly one full-suite run in three, a UI login submitting the customer's credentials comes back as the admin. Reproduced with a burst of concurrent admin logins alongside a single customer UI login; it does not reproduce with concurrent API-only logins, and the login response is sent `no-cache, private`, so it is not a simple edge cache. Root cause is not diagnosable without server access. `createAppStorageState` therefore confirms each session's identity against that role's email before writing anything, so setup fails loudly rather than handing `role: CUSTOMER` specs an admin session — expect the occasional red setup on a full run, and re-run it. Another argument for the self-hosted instance below.
+
 ---
 
 ## Planned
 
 - Self-hosted Toolshop via Docker Compose in CI — deterministic state and full-suite coverage
-- Product CRUD: create through the admin UI, verify through the API
 - Role-based access coverage across admin and customer sessions
 - Cart and checkout calculation tests
