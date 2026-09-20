@@ -1,3 +1,9 @@
  # Shell scripts and Dockerfiles must use LF — CRLF breaks bash shebangs and Docker RUN directives in Linux containers
 *.sh text eol=lf
 Dockerfile text eol=lf
+
+# Vendored upstream skills are hashed byte-for-byte in skills-lock.json, so on a
+# core.autocrlf=true checkout CRLF makes `npm run skills:verify` report drift that
+# is only line endings — the content matches the lock exactly once normalised.
+.claude/skills/playwright-cli/SKILL.md text eol=lf
+.claude/skills/skill-creator/SKILL.md text eol=lf
