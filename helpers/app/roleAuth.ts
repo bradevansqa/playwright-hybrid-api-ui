@@ -9,6 +9,13 @@ import { requireEnv } from '../util/requireEnv';
  */
 export type AuthenticatedRole = Roles.ADMIN | Roles.CUSTOMER;
 
+/**
+ * Roles an API test can mint a token for. A superset of `AuthenticatedRole`:
+ * `SECOND_CUSTOMER` has credentials but no browser storage state, because it
+ * is only ever used as "some other customer" in cross-customer API checks.
+ */
+export type ApiRole = AuthenticatedRole | Roles.SECOND_CUSTOMER;
+
 /** Login credentials for a role. */
 export type RoleCredentials = {
     email: string;
@@ -16,35 +23,40 @@ export type RoleCredentials = {
 };
 
 /**
- * Single source of truth for which env vars and storage state file belong to
- * each role -- shared by `auth.setup.ts` (which writes the storage states)
- * and the `role` fixture (which reads them and mints API tokens).
+ * Single source of truth for which env vars belong to each role -- shared by
+ * `auth.setup.ts` (which logs in to write storage states) and the `role`
+ * fixture (which mints API tokens).
  */
-const ROLE_ENV: Record<
-    AuthenticatedRole,
-    { emailVar: string; passwordVar: string; storageState: StorageStatePaths }
+const ROLE_CREDENTIAL_ENV: Record<
+    ApiRole,
+    { emailVar: string; passwordVar: string }
 > = {
-    [Roles.ADMIN]: {
-        emailVar: 'APP_EMAIL',
-        passwordVar: 'APP_PASSWORD',
-        storageState: StorageStatePaths.ADMIN,
-    },
+    [Roles.ADMIN]: { emailVar: 'APP_EMAIL', passwordVar: 'APP_PASSWORD' },
     [Roles.CUSTOMER]: {
         emailVar: 'CUSTOMER_EMAIL',
         passwordVar: 'CUSTOMER_PASSWORD',
-        storageState: StorageStatePaths.CUSTOMER,
     },
+    [Roles.SECOND_CUSTOMER]: {
+        emailVar: 'CUSTOMER2_EMAIL',
+        passwordVar: 'CUSTOMER2_PASSWORD',
+    },
+};
+
+/** Storage state file written for each browser-capable role. */
+const ROLE_STORAGE_STATE: Record<AuthenticatedRole, StorageStatePaths> = {
+    [Roles.ADMIN]: StorageStatePaths.ADMIN,
+    [Roles.CUSTOMER]: StorageStatePaths.CUSTOMER,
 };
 
 /**
  * Resolves a role's login credentials from the environment.
  *
- * @param {AuthenticatedRole} role - The role to resolve credentials for.
+ * @param {ApiRole} role - The role to resolve credentials for.
  * @returns {RoleCredentials} The role's email and password.
  * @throws {Error} If either environment variable is unset.
  */
-export function credentialsFor(role: AuthenticatedRole): RoleCredentials {
-    const { emailVar, passwordVar } = ROLE_ENV[role];
+export function credentialsFor(role: ApiRole): RoleCredentials {
+    const { emailVar, passwordVar } = ROLE_CREDENTIAL_ENV[role];
 
     return {
         email: requireEnv(emailVar),
@@ -61,5 +73,5 @@ export function credentialsFor(role: AuthenticatedRole): RoleCredentials {
 export function storageStatePathFor(
     role: AuthenticatedRole
 ): StorageStatePaths {
-    return ROLE_ENV[role].storageState;
+    return ROLE_STORAGE_STATE[role];
 }

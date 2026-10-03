@@ -5,6 +5,7 @@ import { ApiEndpoints } from '../../enums/app/app';
 import { Roles } from '../../enums/util/roles';
 import { UserResponseSchema } from '../api/schemas/app/userSchema';
 import {
+    ApiRole,
     AuthenticatedRole,
     credentialsFor,
     storageStatePathFor,
@@ -36,7 +37,7 @@ export type RoleFixtures = {
      * *other* role -- e.g. proving an admin-only endpoint answers 200 for an
      * admin, so a customer's 403 means "forbidden", not "endpoint broken".
      */
-    tokenFor: (role: AuthenticatedRole) => Promise<string>;
+    tokenFor: (role: ApiRole) => Promise<string>;
     /** API token for the role the current spec runs as. */
     authToken: string;
 };
@@ -76,7 +77,7 @@ export const test = base.extend<RoleOptions & RoleFixtures>({
          * what CI runs), and Toolshop tokens expire after 300s -- long
          * enough for a setup-time token to die mid-suite.
          */
-        await use(async (role: AuthenticatedRole): Promise<string> => {
+        await use(async (role: ApiRole): Promise<string> => {
             const { status, body } = await apiRequest({
                 request,
                 method: 'POST',

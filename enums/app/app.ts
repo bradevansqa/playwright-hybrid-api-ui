@@ -51,6 +51,8 @@ export enum ApiEndpoints {
     CARTS = '/carts',
     POSTCODE_LOOKUP = '/postcode-lookup',
     INVOICES = '/invoices',
+    /** Scoped to the caller's own invoices for customers */
+    INVOICES_SEARCH = '/invoices/search',
 }
 
 /** Documented invoice lifecycle statuses (forward-only in the admin UI) */
