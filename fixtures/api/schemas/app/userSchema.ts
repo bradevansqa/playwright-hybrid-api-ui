@@ -36,7 +36,36 @@ export const CurrentUserResponseSchema = z.looseObject({
     role: z.string().optional(),
 });
 
+/**
+ * Schema for the `POST /users/register` payload -- a 1:1 mirror of the
+ * OpenAPI `UserRequest` contract, including its documented length limits.
+ * Used by the registration factory to guarantee the baseline payload is
+ * valid before negative tests break one field at a time.
+ *
+ * `dob` must also be 18-75 years ago and `password` must mix upper/lower
+ * case, a number and a symbol and not appear in a known data leak; those
+ * rules are server-side and documented only as prose, so they are left to
+ * the factory rather than encoded here.
+ */
+export const RegisterRequestSchema = z.strictObject({
+    first_name: z.string().max(40),
+    last_name: z.string().max(20),
+    address: z.strictObject({
+        street: z.string().max(70),
+        house_number: z.string().max(10),
+        city: z.string().max(40),
+        state: z.string().max(40),
+        country: z.string().max(40),
+        postal_code: z.string().max(10),
+    }),
+    phone: z.string().max(24),
+    dob: z.iso.date(),
+    password: z.string().min(8),
+    email: z.email().max(256),
+});
+
 // Type exports
 export type UserResponse = zOutput<typeof UserResponseSchema>;
 export type LoginRequest = zOutput<typeof LoginRequestSchema>;
 export type CurrentUserResponse = zOutput<typeof CurrentUserResponseSchema>;
+export type RegisterRequest = zOutput<typeof RegisterRequestSchema>;

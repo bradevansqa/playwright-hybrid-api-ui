@@ -1,5 +1,7 @@
 import { faker } from '@faker-js/faker';
 import {
+    RegisterRequest,
+    RegisterRequestSchema,
     UserResponse,
     UserResponseSchema,
 } from '../../../fixtures/api/schemas/app/userSchema';
@@ -67,4 +69,50 @@ export const generateLoginCredentials = (
                 pattern: /[A-Za-z0-9!@#$%]/,
             }),
     };
+};
+
+/**
+ * Generates a fully valid `POST /users/register` payload.
+ *
+ * Every value is chosen to satisfy the live server rules, not just the
+ * schema, so that a negative test breaking one field gets an error for that
+ * field alone:
+ * - `password` is random with every required character class -- a fixed
+ *   strong-looking password risks the API's data-leak check.
+ * - `email` carries a random local part, so it never collides with an
+ *   existing account ("A customer with this email address already exists").
+ * - `address` is Dutch with an NL-format postcode, because the API checks the
+ *   postcode format against the country.
+ * - `dob` is 25-60 years ago, safely inside the 18-75 window.
+ *
+ * @param {Partial<RegisterRequest>} [overrides] - Fields to pin to a specific value.
+ * @returns {RegisterRequest} A registration payload that passes validation.
+ */
+export const generateRegistration = (
+    overrides?: Partial<RegisterRequest>
+): RegisterRequest => {
+    const registration: RegisterRequest = {
+        first_name: faker.person.firstName().slice(0, 40),
+        last_name: faker.person.lastName().slice(0, 20),
+        address: {
+            street: faker.location.street().slice(0, 70),
+            house_number: faker.string.numeric({
+                length: 2,
+                allowLeadingZeros: false,
+            }),
+            city: faker.location.city().slice(0, 40),
+            state: 'Utrecht',
+            country: 'NL',
+            postal_code: `${faker.number.int({ min: 1000, max: 9999 })}${faker.string.alpha({ length: 2, casing: 'upper' })}`,
+        },
+        phone: faker.string.numeric(10),
+        dob: faker.date
+            .birthdate({ mode: 'age', min: 25, max: 60 })
+            .toISOString()
+            .slice(0, 10),
+        password: `${faker.string.alpha({ length: 4, casing: 'upper' })}${faker.string.alpha({ length: 4, casing: 'lower' })}${faker.string.numeric(3)}#!`,
+        email: `qa.${faker.string.alphanumeric({ length: 12, casing: 'lower' })}@example.com`,
+    };
+
+    return RegisterRequestSchema.parse({ ...registration, ...overrides });
 };
