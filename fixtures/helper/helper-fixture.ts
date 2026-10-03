@@ -1,8 +1,10 @@
-import { test as base, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { z } from 'zod/v4';
 import type { output as zOutput } from 'zod/v4';
 import { apiRequest } from '../api/plain-function';
+import { test as roleTest } from '../role/role-fixture';
 import { ApiEndpoints } from '../../enums/app/app';
+import { Roles } from '../../enums/util/roles';
 
 /**
  * Helper fixtures for important, recurring API-driven setup and teardown.
@@ -122,7 +124,7 @@ export type HelperFixtures = {
 
 // ==================== Fixtures ====================
 
-export const test = base.extend<HelperFixtures>({
+export const test = roleTest.extend<HelperFixtures>({
     /**
      * Seeds a real invoice via the API (as admin) before the test, and
      * reverts its status after.
@@ -139,11 +141,20 @@ export const test = base.extend<HelperFixtures>({
      * create the invoice -> read it back to capture the canonical initial
      * status used later for the teardown revert.
      *
+     * The admin token is minted here via `tokenFor` rather than read from
+     * `process.env.ACCESS_TOKEN`: that env var is only set by the `setup`
+     * project, which the `api` project does not depend on. Reading it made
+     * every `api`-project consumer of this fixture fail at invoice creation
+     * with a 401 -- silently, for specs marked `test.fail()`.
+     *
      * @param {APIRequestContext} request - Playwright request context (injected automatically).
+     * @param {function} tokenFor - Mints an API token for a role (from the role fixture).
      * @param {function} use - Playwright fixture lifecycle callback.
      */
-    seededInvoice: async ({ request }, use) => {
+    seededInvoice: async ({ request, tokenFor }, use) => {
         // ── SETUP: Runs before the test ──────────────────────────────
+        const adminToken = await tokenFor(Roles.ADMIN);
+
         const { status: productsStatus, body: productsBody } = await apiRequest(
             {
                 request,
@@ -199,7 +210,7 @@ export const test = base.extend<HelperFixtures>({
             method: 'POST',
             url: ApiEndpoints.INVOICES,
             baseUrl: process.env.API_URL,
-            headers: process.env.ACCESS_TOKEN,
+            headers: adminToken,
             body: {
                 billing_street: `${address.street} ${address.house_number}`,
                 billing_city: address.city,
@@ -224,7 +235,7 @@ export const test = base.extend<HelperFixtures>({
             method: 'GET',
             url: `${ApiEndpoints.INVOICES}/${invoiceId}`,
             baseUrl: process.env.API_URL,
-            headers: process.env.ACCESS_TOKEN,
+            headers: adminToken,
         });
 
         expect(getStatus).toBe(200);
@@ -239,7 +250,7 @@ export const test = base.extend<HelperFixtures>({
             method: 'PUT',
             url: `${ApiEndpoints.INVOICES}/${invoice.id}/status`,
             baseUrl: process.env.API_URL,
-            headers: process.env.ACCESS_TOKEN,
+            headers: adminToken,
             body: {
                 status: invoice.status,
                 status_message: 'Reverted by seededInvoice fixture teardown',
@@ -261,7 +272,7 @@ export const test = base.extend<HelperFixtures>({
             method: 'GET',
             url: `${ApiEndpoints.INVOICES}/${invoice.id}`,
             baseUrl: process.env.API_URL,
-            headers: process.env.ACCESS_TOKEN,
+            headers: adminToken,
         });
 
         expect(verifyStatus).toBe(200);

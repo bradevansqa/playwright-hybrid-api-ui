@@ -10,7 +10,10 @@ import type { output as zOutput } from 'zod/v4';
  * FIXME: live `GET /invoices/{id}` responses also include a `payment` object
  * (`payment_method`, `payment_details`) and `eco_discount_percentage` /
  * `eco_discount_amount` fields that are absent from the documented
- * `InvoiceResponse` schema. Per the "Explore Before Generate" policy this
+ * `InvoiceResponse` schema, and returns `null` for fields documented as
+ * non-nullable (`additional_discount_percentage`, `status_message`, line
+ * `discount_percentage` / `discounted_price`, product `in_stock`) while
+ * omitting product `is_location_offer`. Per the "Explore Before Generate" policy this
  * schema mirrors the documentation, not the live shape, so parsing a real
  * response currently throws `unrecognized_keys` — a contract bug to report,
  * not a reason to loosen the schema (see `api-testing` skill Phase 7).
