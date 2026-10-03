@@ -3,7 +3,7 @@ import { z } from 'zod/v4';
 import type { output as zOutput } from 'zod/v4';
 import { apiRequest } from '../api/plain-function';
 import { test as roleTest } from '../role/role-fixture';
-import { ApiEndpoints } from '../../enums/app/app';
+import { ApiEndpoints, PaymentMethods } from '../../enums/app/app';
 import { Roles } from '../../enums/util/roles';
 
 /**
@@ -217,7 +217,7 @@ export const test = roleTest.extend<HelperFixtures>({
                 billing_state: address.state,
                 billing_country: address.country,
                 billing_postal_code: address.postcode,
-                payment_method: 'cash-on-delivery',
+                payment_method: PaymentMethods.CASH_ON_DELIVERY,
                 payment_details: {},
                 cart_id: cartId,
             },

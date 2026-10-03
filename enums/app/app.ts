@@ -19,6 +19,10 @@ export enum Messages {
     PRODUCT_NAME_REQUIRED = 'Name is required',
     PRODUCT_DESCRIPTION_REQUIRED = 'Description is required',
     PRODUCT_PRICE_REQUIRED = 'Price is required',
+    PAYMENT_SUCCESS = 'Payment was successful',
+    /** Prefix of the checkout confirmation; the invoice number follows it */
+    ORDER_CONFIRMATION = 'Thanks for your order! Your invoice number is',
+    ALREADY_LOGGED_IN = 'you are already logged in',
 }
 
 /** UI route paths */
@@ -29,6 +33,7 @@ export enum AppRoutes {
     ADMIN_ORDER_EDIT = '/admin/orders/edit',
     ADMIN_PRODUCT_ADD = '/admin/products/add',
     ADMIN_DASHBOARD = '/admin/dashboard',
+    CHECKOUT = '/checkout',
 }
 
 /** API endpoint paths */
@@ -107,4 +112,21 @@ export enum StorageStatePaths {
 export enum BrowserStorageKeys {
     /** localStorage key holding the logged-in session's JWT */
     AUTH_TOKEN = 'auth-token',
+}
+
+/** sessionStorage keys the app uses to track the visitor's cart */
+export enum CartSessionKeys {
+    /** Id of the API cart the checkout page renders */
+    CART_ID = 'cart_id',
+    /** Item count shown on the nav-bar cart badge */
+    CART_QUANTITY = 'cart_quantity',
+}
+
+/** Payment methods offered at checkout (`payment_method` values) */
+export enum PaymentMethods {
+    BANK_TRANSFER = 'bank-transfer',
+    CASH_ON_DELIVERY = 'cash-on-delivery',
+    CREDIT_CARD = 'credit-card',
+    BUY_NOW_PAY_LATER = 'buy-now-pay-later',
+    GIFT_CARD = 'gift-card',
 }

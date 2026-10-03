@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import { z } from 'zod/v4';
 import type { output as zOutput } from 'zod/v4';
 import type { ApiRequestFn } from '../../fixtures/api/api-types';
-import { ApiEndpoints } from '../../enums/app/app';
+import { ApiEndpoints, PaymentMethods } from '../../enums/app/app';
 import { requireEnv } from '../util/requireEnv';
 
 /*
@@ -223,7 +223,7 @@ export async function placeOrder(
             billing_state: address.state,
             billing_country: address.country,
             billing_postal_code: address.postcode,
-            payment_method: 'cash-on-delivery',
+            payment_method: PaymentMethods.CASH_ON_DELIVERY,
             payment_details: {},
             cart_id: cartId,
         },
