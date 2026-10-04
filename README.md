@@ -12,10 +12,16 @@ Building this suite uncovered real defects in the application under test. Each o
 
 | Finding | Severity | Test |
 |---|---|---|
-| **Broken access control.** `GET /users` correctly returns 403 to a customer, but `GET /users/search` returns 200 with other users' names, emails, dates of birth, and addresses. | High (data exposure) | [roleAccess.spec.ts](tests/app/api/roleAccess.spec.ts) |
+| **Any customer can download any invoice PDF.** `GET /invoices/{id}` correctly hides another customer's invoice (404), but `GET /invoices/{invoice_number}/download-pdf` serves that same invoice as a PDF to any logged-in customer: name, billing address and order lines. Invoice numbers are sequential, so they are easy to guess. | High (data exposure) | [customerIsolation.spec.ts](tests/app/api/customerIsolation.spec.ts) |
+| **Customers can change any invoice's status.** `PUT /invoices/{id}/status` is an admin operation, but a customer token changes the status of an invoice the customer doesn't own. | High (broken authorisation) | [customerIsolation.spec.ts](tests/app/api/customerIsolation.spec.ts) |
+| **Customers can search all users.** `GET /users` correctly returns 403 to a customer, but `GET /users/search` returns 200 with other users' names, emails, dates of birth, and addresses. | High (data exposure) | [roleAccess.spec.ts](tests/app/api/roleAccess.spec.ts) |
+| **Duplicate invoice numbers.** Orders placed at the same moment can be given the same invoice number: five simultaneous orders got only four distinct numbers. The number is what the customer sees on the confirmation page and the PDF, and what invoice search uses. | Medium | [checkoutTotals.spec.ts](tests/app/api/checkoutTotals.spec.ts) |
 | **Silent data loss.** On *Add Product*, ticking "Item for rent" clears the Stock value the admin already typed. Checked live: the backend accepts a rental product with stock, so the problem is in the page's own code, not a business rule. | Medium | [productCrud.spec.ts](tests/app/e2e/productCrud.spec.ts) |
-| **Contract drift.** `GET /invoices/{id}` returns a `payment` object and `eco_discount_*` fields that the OpenAPI `InvoiceResponse` doesn't document. | Low (docs/API mismatch) | [invoice.spec.ts](tests/app/api/invoice.spec.ts) |
-| **Undocumented status codes.** Role-protected endpoints return 403 to customers, but the OpenAPI spec lists 403 for none of them. | Low (docs) | [roleAccess.spec.ts](tests/app/api/roleAccess.spec.ts) |
+| **Registration accepts any email.** `email` is documented as `format: email`, but the API accepts `plaintext`, `@missing-local.com` and `double@@at.com`. Every other documented registration rule is enforced. | Medium | [registration.spec.ts](tests/app/api/registration.spec.ts) |
+| **Unrounded money.** The 15% combination discount amount comes back with raw float precision (`22.5975`), while the eco discount and totals are rounded to cents. | Low | [checkoutTotals.spec.ts](tests/app/api/checkoutTotals.spec.ts) |
+| **Address accepts an empty array.** `address` is documented as an object, but `[]` is accepted at registration. | Low | [registration.spec.ts](tests/app/api/registration.spec.ts) |
+| **Contract drift.** Every live invoice breaks the OpenAPI `InvoiceResponse`: undocumented `payment` and `eco_discount_*` fields, `null` in fields documented as numbers or strings, and a missing `is_location_offer`. | Low (docs/API mismatch) | [invoice.spec.ts](tests/app/api/invoice.spec.ts) |
+| **Undocumented status codes.** Role-protected endpoints return 403 to customers, and registration returns 422 for validation errors and duplicate emails, but the OpenAPI spec lists neither. | Low (docs) | [roleAccess.spec.ts](tests/app/api/roleAccess.spec.ts), [registration.spec.ts](tests/app/api/registration.spec.ts) |
 | **Wrong session returned on login.** Intermittently, a customer UI login comes back with the admin's session. Investigated and guarded against; see [Known limitations](#known-limitations). | Unknown (server-side) | [createStorageState.ts](helpers/app/createStorageState.ts) |
 
 ---
@@ -76,11 +82,12 @@ expect(InvoiceResponseSchema.parse(body)).toBeTruthy();
 
 On top of the scaffold (about 2,200 lines across 35 files):
 
-- **Role switching.** [role-fixture.ts](fixtures/role/role-fixture.ts) makes `role` a Playwright option. `test.use({ role: Roles.CUSTOMER })` switches both the browser session and the API token for a file, and `tokenFor(role)` mints a token for the other role to compare.
+- **Role switching.** [role-fixture.ts](fixtures/role/role-fixture.ts) makes `role` a Playwright option. `test.use({ role: Roles.CUSTOMER })` switches both the browser session and the API token for a file, and `tokenFor(role)` mints a token for another role to compare, including a second customer for cross-customer checks.
 - **Multi-role auth with identity checks.** Admin and customer storage states are generated in [auth.setup.ts](tests/app/auth.setup.ts) and [createStorageState.ts](helpers/app/createStorageState.ts), with checks that each session belongs to the expected user.
 - **Invoice seeding fixture.** `seededInvoice` in [helper-fixture.ts](fixtures/helper/helper-fixture.ts) creates an invoice through the API and reverts it afterward.
-- **Zod schemas** for invoices (with nested product, brand, category, and image types) and products.
-- **Page objects** for the admin dashboard, admin order edit, admin product add, and the product listing.
+- **Checkout helpers.** [checkout.ts](helpers/app/checkout.ts) picks products by property (never by id, because the demo database is reset regularly), seeds carts, places orders, closes them again afterwards, and calculates what an order should cost independently of the app.
+- **Zod schemas** for invoices (with nested product, brand, category, and image types), products, carts, postcode lookups, registration requests and responses, and error bodies.
+- **Page objects** for the admin dashboard, admin order edit, admin product add, the product listing, and the four-step checkout wizard.
 - **Tests:**
   - API role-based access control across four endpoints
   - Invoice lifecycle end to end: seeded by API, changed in the UI, confirmed by API
@@ -88,6 +95,10 @@ On top of the scaffold (about 2,200 lines across 35 files):
   - Admin-page access for admins and customers
   - Add Product form validation
   - Product listing, pagination, and category filtering checked against the API
+  - Cross-customer isolation: one customer reading or changing another's invoices, PDFs and profile, plus invalid-id fuzzing
+  - Registration validation, about 60 tests: required and optional fields, wrong types, length limits, password rules, date-of-birth limits, and every documented status code. Each request includes a field the API always rejects, so no test can create an account on the shared site.
+  - Checkout totals through the API: each pricing rule checked against an independent calculation, plus simultaneous orders
+  - Checkout end to end: the cart page, the checkout wizard and the resulting invoice must all agree
 - **CI.** Credentials moved to GitHub secrets, with a second account for role tests. Vendored skill files are pinned to LF line endings so the integrity check is stable on Windows.
 
 ---
@@ -216,7 +227,7 @@ Each test carries exactly one tag.
 ```bash
 npm ci
 npx playwright install chromium
-cp env/.env.example env/.env.dev    # set APP_URL, API_URL, APP_EMAIL, APP_PASSWORD, CUSTOMER_EMAIL, CUSTOMER_PASSWORD
+cp env/.env.example env/.env.dev    # set APP_URL, API_URL, APP_EMAIL, APP_PASSWORD, CUSTOMER_EMAIL, CUSTOMER_PASSWORD, CUSTOMER2_EMAIL, CUSTOMER2_PASSWORD
 npm test
 ```
 
@@ -234,18 +245,17 @@ npm run report            # open the HTML report
 
 **CI runs API tests only.** The public Toolshop instance is behind Cloudflare bot protection, which challenges datacenter IPs including GitHub's runners. The full suite runs locally.
 
-**Cleanup is partial.** The Invoice API has no DELETE endpoint, so seeded invoices are reverted rather than removed and stay on the shared instance.
+**Cleanup is partial.** The Invoice API has no DELETE endpoint, so test invoices can't be removed. Seeded invoices have their status reverted, and orders placed by the checkout tests are closed (set to COMPLETED) after each test. Both stay on the shared instance.
 
 **Shared state.** Tests run against a public instance other people also use, so data may change between runs.
 
-**Logins can return the wrong user's session.** In roughly one full-suite run in three, a UI login with the customer's credentials comes back as the admin. It reproduces with a burst of concurrent admin logins alongside a single customer UI login. It does not reproduce with concurrent API-only logins, and the login response is sent `no-cache, private`, so it is not a simple edge cache. The root cause can't be diagnosed without server access. Setup therefore checks each session's email against the expected role and fails loudly rather than giving customer specs an admin session. Expect an occasional red setup on a full run; re-run it.
+**Logins can return the wrong user's session.** In roughly one full-suite run in three, a UI login with the customer's credentials comes back as the admin. It reproduces with a burst of concurrent admin logins alongside a single customer UI login. It does not reproduce with concurrent API-only logins, and the login response is sent `no-cache, private`, so it is not a simple edge cache. The root cause can't be diagnosed without server access. Setup therefore checks each session's email against the expected role and fails loudly rather than giving customer specs an admin session. Expect an occasional red setup on a full run; re-run it. On some days it is worse: it has also reproduced with one worker and no other logins running, so the timing on the server side matters more than this suite's own concurrency.
 
 ---
 
 ## Planned
 
-- Self-hosted Toolshop via Docker Compose in CI: deterministic state and full-suite coverage
-- Cart and checkout calculation tests
+- Self-hosted Toolshop via Docker Compose in CI: deterministic state and full-suite coverage, and a place to run the registration 201 test, which is skipped on the shared site because accounts can't be deleted
 
 ---
 
