@@ -23,6 +23,10 @@ export enum Messages {
     /** Prefix of the checkout confirmation; the invoice number follows it */
     ORDER_CONFIRMATION = 'Thanks for your order! Your invoice number is',
     ALREADY_LOGGED_IN = 'you are already logged in',
+    POSTCODE_FORMAT_INVALID = 'The postal code format is not valid for the selected country.',
+    CARD_NUMBER_INVALID = 'Invalid card number format.',
+    CARD_EXPIRY_INVALID = 'Invalid date format. Use MM/YYYY.',
+    CARD_CVV_INVALID = 'CVV must be 3 or 4 digits.',
 }
 
 /** UI route paths */
@@ -58,6 +62,32 @@ export enum ApiEndpoints {
     INVOICES = '/invoices',
     /** Scoped to the caller's own invoices for customers */
     INVOICES_SEARCH = '/invoices/search',
+}
+
+/**
+ * Path suffixes appended to a resource path plus id, e.g.
+ * `${ApiEndpoints.INVOICES}/${id}${ApiEndpointSuffixes.STATUS}`.
+ */
+export enum ApiEndpointSuffixes {
+    /** `PUT /invoices/{invoiceId}/status` */
+    STATUS = '/status',
+    /** `GET /invoices/{invoice_number}/download-pdf` */
+    DOWNLOAD_PDF = '/download-pdf',
+}
+
+/** Invoice-number format, e.g. `INV-2026000014` (verified live) */
+export enum InvoiceNumberFormat {
+    /** Prefix shared by every invoice number -- searching it matches all */
+    PREFIX = 'INV-',
+}
+
+/**
+ * Checkout discount percentages, observed live (undocumented): rental +
+ * purchase earns COMBINATION, otherwise any eco-friendly item earns ECO.
+ */
+export enum DiscountPercentages {
+    COMBINATION = 15,
+    ECO = 5,
 }
 
 /** Documented invoice lifecycle statuses (forward-only in the admin UI) */

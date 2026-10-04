@@ -108,6 +108,56 @@ export const InvoiceResponseSchema = z.strictObject({
     created_at: z.string(),
 });
 
+/*
+ * ==================== Live-drift projections (documented exception) ====
+ *
+ * Every live invoice response fails `InvoiceResponseSchema` (see the FIXME
+ * banner above); that drift is asserted -- and reported -- by
+ * tests/app/api/invoice.spec.ts. Tests that only need a few invoice fields
+ * (ids, status, totals) therefore parse with the projections below instead
+ * of being skipped wholesale. They are deliberately `looseObject` and type
+ * the drifted fields as the API actually returns them (`null` where the
+ * contract says number). This is an agreed exception to the strict-schema
+ * rule, scoped to invoice reads only: do not reuse these for contract
+ * assertions, and delete them once the API matches its contract.
+ */
+
+/** Projection: the id and number of an invoice (create, list, search). */
+export const InvoiceRefProjection = z.looseObject({
+    id: z.string(),
+    invoice_number: z.string(),
+    user_id: z.string(),
+});
+
+/** Projection: a page of `GET /invoices` or `GET /invoices/search`. */
+export const InvoicePageProjection = z.looseObject({
+    data: z.array(InvoiceRefProjection),
+    total: z.int(),
+});
+
+/** Projection: an invoice's status. */
+export const InvoiceStatusProjection = z.looseObject({
+    id: z.string(),
+    status: z.string(),
+});
+
+/** Projection: an invoice's money fields and lines. */
+export const InvoiceTotalsProjection = z.looseObject({
+    subtotal: z.number(),
+    additional_discount_percentage: z.number().nullable(),
+    additional_discount_amount: z.number().nullable(),
+    eco_discount_percentage: z.number().nullable(),
+    eco_discount_amount: z.number().nullable(),
+    total: z.number(),
+    invoicelines: z.array(
+        z.looseObject({
+            product_id: z.string(),
+            unit_price: z.number(),
+            quantity: z.int(),
+        })
+    ),
+});
+
 // Type exports
 export type BrandResponse = zOutput<typeof BrandResponseSchema>;
 export type CategoryResponse = zOutput<typeof CategoryResponseSchema>;
@@ -115,3 +165,5 @@ export type ImageResponse = zOutput<typeof ImageResponseSchema>;
 export type ProductResponse = zOutput<typeof ProductResponseSchema>;
 export type InvoiceLineResponse = zOutput<typeof InvoiceLineResponseSchema>;
 export type InvoiceResponse = zOutput<typeof InvoiceResponseSchema>;
+export type InvoiceRef = zOutput<typeof InvoiceRefProjection>;
+export type InvoiceTotals = zOutput<typeof InvoiceTotalsProjection>;

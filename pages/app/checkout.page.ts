@@ -3,6 +3,7 @@ import type { Locator, Page } from '@playwright/test';
 import {
     AppRoutes,
     CartSessionKeys,
+    InvoiceNumberFormat,
     Messages,
     PaymentMethods,
 } from '../../enums/app/app';
@@ -30,20 +31,27 @@ export class CheckoutPage {
         return this.page.getByTestId('product-title');
     }
 
-    get linePrices(): Locator {
-        return this.page.getByTestId('line-price');
+    // The cart row for one product, wherever it sits in the table.
+    cartRow(productName: string): Locator {
+        return this.page.getByRole('row').filter({
+            has: this.lineTitles.filter({ hasText: productName }),
+        });
+    }
+
+    linePriceIn(row: Locator): Locator {
+        return row.getByTestId('line-price');
     }
 
     get subtotal(): Locator {
         return this.page.getByTestId('cart-subtotal');
     }
 
-    /** Combination discount row ("Discount (15%)") -- rental + purchase carts only. */
+    // "Discount (15%)" row -- rental + purchase carts only.
     get combinationDiscount(): Locator {
         return this.page.getByTestId('cart-discount');
     }
 
-    /** Eco discount row ("Eco-Friendly Discount (5%)") -- eco carts only. */
+    // "Eco-Friendly Discount (5%)" row -- eco carts only.
     get ecoDiscount(): Locator {
         return this.page.getByTestId('cart-eco-discount');
     }
@@ -89,6 +97,26 @@ export class CheckoutPage {
     }
 
     // ==================== Feedback Locators ====================
+    // Verified via playwright-cli: the Billing step shows no per-field
+    // messages -- invalid fields only keep Proceed disabled -- apart from the
+    // postcode-lookup alert. The credit-card form shows one message under
+    // each malformed field; "Check payment" stays disabled until all pass.
+
+    get postcodeLookupError(): Locator {
+        return this.page.getByText(Messages.POSTCODE_FORMAT_INVALID);
+    }
+
+    get cardNumberError(): Locator {
+        return this.page.getByText(Messages.CARD_NUMBER_INVALID);
+    }
+
+    get cardExpiryError(): Locator {
+        return this.page.getByText(Messages.CARD_EXPIRY_INVALID);
+    }
+
+    get cardCvvError(): Locator {
+        return this.page.getByText(Messages.CARD_CVV_INVALID);
+    }
 
     get alreadyLoggedInMessage(): Locator {
         return this.page.getByText(Messages.ALREADY_LOGGED_IN);
@@ -179,9 +207,7 @@ export class CheckoutPage {
             await this.postalCodeInput.fill(postcode);
             await this.houseNumberInput.fill(houseNumber);
             await this.houseNumberInput.blur();
-            await expect(this.stateInput).not.toHaveValue('', {
-                timeout: 3000,
-            });
+            await expect(this.stateInput).not.toHaveValue('');
         }).toPass();
         await expect(this.proceedButton).toBeEnabled();
         await this.proceedButton.click();
@@ -209,7 +235,9 @@ export class CheckoutPage {
      */
     async confirmedInvoiceNumber(): Promise<string> {
         const text = await this.orderConfirmation.innerText();
-        const invoiceNumber = /INV-\d+/.exec(text)?.[0];
+        const invoiceNumber = new RegExp(
+            `${InvoiceNumberFormat.PREFIX}[0-9]+`
+        ).exec(text)?.[0];
 
         expect(invoiceNumber, `No invoice number in "${text}"`).toBeDefined();
 

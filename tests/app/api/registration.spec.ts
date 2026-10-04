@@ -4,7 +4,10 @@ import {
     UnprocessableEntityResponse,
     UnprocessableEntityResponseSchema,
 } from '../../../fixtures/api/schemas/util/errorResponseSchema';
-import type { RegisterRequest } from '../../../fixtures/api/schemas/app/userSchema';
+import {
+    RegisterRequest,
+    RegisterResponseSchema,
+} from '../../../fixtures/api/schemas/app/userSchema';
 import type { ApiRequestFn } from '../../../fixtures/api/api-types';
 import { generateRegistration } from '../../../test-data/factories/app/user.factory';
 import {
@@ -13,7 +16,10 @@ import {
     UNDERAGE_DOB,
     WEAK_PASSWORDS,
 } from '../../../test-data/static/app/registration';
-import { INVALID_STRING_VALUES } from '../../../test-data/static/util/invalid-values';
+import {
+    INVALID_OBJECT_VALUES,
+    INVALID_STRING_VALUES,
+} from '../../../test-data/static/util/invalid-values';
 import { requireEnv } from '../../../helpers/util/requireEnv';
 
 /**
@@ -29,15 +35,26 @@ import { requireEnv } from '../../../helpers/util/requireEnv';
  * `{field under test, guard}`, which also proves the rest of the factory
  * payload is valid.
  *
- * Spec discrepancy (per `api-testing` Phase 7 -- assert the real status
- * code, note the divergence): the OpenAPI spec documents 201/400/401/403/409
- * for this endpoint. Validation failures actually return 422 with a
- * field -> messages map, and a duplicate email is a 422 too, not the
- * documented 409.
+ * Status-code coverage: the OpenAPI spec documents 201/400/401/403/409 for
+ * this endpoint. Validation failures actually return 422 with a field ->
+ * messages map (asserted throughout, per `api-testing` Phase 7 -- assert the
+ * real status code, note the divergence), and a duplicate email is a 422
+ * too. Each documented code also has its own spec-shaped test at the end of
+ * this file, skipped with a FIXME explaining why -- no silent coverage drops.
  */
 
 const DOB_GUARD = { dob: UNDERAGE_DOB } as const;
+/** One over the documented 40-character `first_name` limit. */
 const FIRST_NAME_GUARD = { first_name: 'x'.repeat(41) } as const;
+
+/**
+ * Optional string fields per the contract, each with the guard that does not
+ * collide with it. Leaving one out must be accepted; a wrong type must not.
+ */
+const OPTIONAL_STRING_FIELDS = [
+    { field: 'phone', guard: DOB_GUARD },
+    { field: 'dob', guard: FIRST_NAME_GUARD },
+] as const;
 
 /** Required fields per the OpenAPI `UserRequest` contract. */
 const REQUIRED_FIELDS = [
@@ -118,6 +135,7 @@ async function registerExpectingRejection(
     });
 
     expect(status).toBe(422);
+    expect(UnprocessableEntityResponseSchema.parse(body)).toBeTruthy();
 
     return UnprocessableEntityResponseSchema.parse(body);
 }
@@ -253,6 +271,106 @@ test.describe('api registration validation', () => {
         );
     }
 
+    for (const { field, guard } of OPTIONAL_STRING_FIELDS) {
+        const guardField = Object.keys(guard)[0];
+
+        test(
+            `should accept a registration without the optional ${field}`,
+            { tag: '@regression' },
+            async ({ apiRequest }) => {
+                const { [field]: _omitted, ...withoutField } =
+                    generateRegistration();
+
+                const errors = await registerExpectingRejection(apiRequest, {
+                    ...withoutField,
+                    ...guard,
+                });
+
+                expect(failedFields(errors)).toEqual([guardField]);
+            }
+        );
+
+        // `undefined` is the omission case above, not an invalid type.
+        for (const invalidValue of INVALID_STRING_VALUES.filter(
+            (value) => value !== undefined
+        )) {
+            test(
+                `should reject ${field} = ${JSON.stringify(invalidValue)}`,
+                { tag: '@regression' },
+                async ({ apiRequest }) => {
+                    const errors = await registerExpectingRejection(
+                        apiRequest,
+                        {
+                            ...generateRegistration(),
+                            [field]: invalidValue,
+                            ...guard,
+                        }
+                    );
+
+                    expect(failedFields(errors)).toEqual(
+                        [field, guardField].sort()
+                    );
+                }
+            );
+        }
+    }
+
+    test(
+        'should accept a registration without the optional address',
+        { tag: '@regression' },
+        async ({ apiRequest }) => {
+            const { address: _omitted, ...withoutAddress } =
+                generateRegistration();
+
+            const errors = await registerExpectingRejection(apiRequest, {
+                ...withoutAddress,
+                ...DOB_GUARD,
+            });
+
+            expect(failedFields(errors)).toEqual(['dob']);
+        }
+    );
+
+    // `undefined` is the omission case above; `[]` is covered by the
+    // test.fail below, since the API wrongly accepts it.
+    for (const invalidValue of INVALID_OBJECT_VALUES.filter(
+        (value) => value !== undefined && !Array.isArray(value)
+    )) {
+        test(
+            `should reject address = ${JSON.stringify(invalidValue)}`,
+            { tag: '@regression' },
+            async ({ apiRequest }) => {
+                const errors = await registerExpectingRejection(apiRequest, {
+                    ...generateRegistration(),
+                    address: invalidValue,
+                    ...DOB_GUARD,
+                });
+
+                expect(failedFields(errors)).toEqual(['address', 'dob']);
+            }
+        );
+    }
+
+    /*
+     * FIXME: no ticket yet -- `address` is documented as an object, but the
+     * API (PHP, where a JSON `[]` and `{}` both become an empty array)
+     * accepts an empty JSON array. Asserted as it should behave;
+     * `test.fail()` per the repo convention (see roleAccess.spec.ts).
+     */
+    test.fail(
+        'should reject address = []',
+        { tag: '@regression' },
+        async ({ apiRequest }) => {
+            const errors = await registerExpectingRejection(apiRequest, {
+                ...generateRegistration(),
+                address: [],
+                ...DOB_GUARD,
+            });
+
+            expect(failedFields(errors)).toEqual(['address', 'dob']);
+        }
+    );
+
     test(
         'should reject an email that already has an account',
         { tag: '@regression' },
@@ -269,12 +387,14 @@ test.describe('api registration validation', () => {
     );
 
     /*
-     * Missing validation: `email` is documented as `format: email`, but the
+     * FIXME: no ticket yet -- missing validation, to report upstream.
+     * `email` is documented as `format: email`, but the
      * API accepts any string -- `plaintext` included -- and would create an
      * account with it (the guard prevents that here). Every other documented
      * rule on this endpoint is enforced.
      *
-     * Asserted as it should behave and marked `test.fail()`: green while the
+     * Asserted as it should behave and marked `test.fail()` rather than
+     * `test.skip` (repo convention, see roleAccess.spec.ts): green while the
      * flaw exists, failing loudly -- prompting removal of `test.fail()` --
      * once fixed.
      */
@@ -296,6 +416,94 @@ test.describe('api registration validation', () => {
                 await test.step('THEN email should be rejected alongside the guard (currently is not)', async () => {
                     expect(failedFields(errors)).toEqual(['dob', 'email']);
                 });
+            }
+        );
+    }
+
+    /*
+     * ==================== Documented status codes ====================
+     * Written as the spec describes, each skipped with the reason it cannot
+     * run as written (api-testing: no silent coverage drops).
+     */
+
+    // FIXME: no ticket yet -- deliberately not run against the shared public
+    // instance: a 201 creates a real account, and accounts cannot be deleted.
+    // Enable once the suite targets a self-hosted Toolshop (README: Planned).
+    // eslint-disable-next-line playwright/no-skipped-test -- documented status code kept per Constitution 'No Silent Coverage Drops'; see FIXME
+    test.skip(
+        'should register a new customer (201)',
+        { tag: '@api' },
+        async ({ apiRequest }) => {
+            const { status, body } = await apiRequest({
+                method: 'POST',
+                url: ApiEndpoints.REGISTER,
+                baseUrl: requireEnv('API_URL'),
+                body: generateRegistration(),
+            });
+
+            expect(status).toBe(201);
+            expect(RegisterResponseSchema.parse(body)).toBeTruthy();
+        }
+    );
+
+    // FIXME: no ticket yet -- documented as 400; the API returns 422 for
+    // every validation failure, which the per-field tests above assert.
+    // eslint-disable-next-line playwright/no-skipped-test -- documented status code kept per Constitution 'No Silent Coverage Drops'; see FIXME
+    test.skip(
+        'should answer a validation failure with 400 as documented',
+        { tag: '@api' },
+        async ({ apiRequest }) => {
+            const { status } = await apiRequest({
+                method: 'POST',
+                url: ApiEndpoints.REGISTER,
+                baseUrl: requireEnv('API_URL'),
+                body: { ...generateRegistration(), ...DOB_GUARD },
+            });
+
+            expect(status).toBe(400);
+        }
+    );
+
+    // FIXME: no ticket yet -- documented as 409; the API returns 422 for a
+    // duplicate email, which the "already has an account" test asserts.
+    // eslint-disable-next-line playwright/no-skipped-test -- documented status code kept per Constitution 'No Silent Coverage Drops'; see FIXME
+    test.skip(
+        'should answer a duplicate email with 409 as documented',
+        { tag: '@api' },
+        async ({ apiRequest }) => {
+            const { status } = await apiRequest({
+                method: 'POST',
+                url: ApiEndpoints.REGISTER,
+                baseUrl: requireEnv('API_URL'),
+                body: {
+                    ...generateRegistration(),
+                    email: requireEnv('CUSTOMER_EMAIL'),
+                    ...DOB_GUARD,
+                },
+            });
+
+            expect(status).toBe(409);
+        }
+    );
+
+    // FIXME: no ticket yet -- 401 and 403 are documented for this public
+    // endpoint with no stated trigger, and none could be found: an invalid
+    // bearer token is ignored (verified live, still 422). Kept until the
+    // spec says what produces them.
+    for (const documentedStatus of [401, 403]) {
+        // eslint-disable-next-line playwright/no-skipped-test -- documented status code kept per Constitution 'No Silent Coverage Drops'; see FIXME
+        test.skip(
+            `should answer ${documentedStatus} as documented (trigger unknown)`,
+            { tag: '@api' },
+            async ({ apiRequest }) => {
+                const { status } = await apiRequest({
+                    method: 'POST',
+                    url: ApiEndpoints.REGISTER,
+                    baseUrl: requireEnv('API_URL'),
+                    body: { ...generateRegistration(), ...DOB_GUARD },
+                });
+
+                expect(status).toBe(documentedStatus);
             }
         );
     }

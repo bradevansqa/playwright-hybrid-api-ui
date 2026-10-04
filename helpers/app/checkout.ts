@@ -1,48 +1,42 @@
-import { expect } from '@playwright/test';
-import { z } from 'zod/v4';
-import type { output as zOutput } from 'zod/v4';
+import { expect, test } from '@playwright/test';
+import { generateStatusMessage } from '../../test-data/factories/app/invoice.factory';
 import type { ApiRequestFn } from '../../fixtures/api/api-types';
-import { ApiEndpoints, PaymentMethods } from '../../enums/app/app';
+import {
+    ApiEndpoints,
+    ApiEndpointSuffixes,
+    DiscountPercentages,
+    InvoiceStatus,
+    PaymentMethods,
+} from '../../enums/app/app';
+import {
+    ProductListResponse,
+    ProductListResponseSchema,
+} from '../../fixtures/api/schemas/app/productSchema';
+import {
+    CartCreatedResponseSchema,
+    CartItemAddedResponseSchema,
+} from '../../fixtures/api/schemas/app/cartSchema';
+import { PostcodeLookupResponseSchema } from '../../fixtures/api/schemas/app/postcodeSchema';
+import { CurrentUserResponseSchema } from '../../fixtures/api/schemas/app/userSchema';
+import { Roles } from '../../enums/util/roles';
+import {
+    InvoiceRef,
+    InvoiceRefProjection,
+    InvoiceStatusProjection,
+} from '../../fixtures/api/schemas/app/invoiceSchema';
 import { requireEnv } from '../util/requireEnv';
 
 /*
  * API-side checkout plumbing shared by the checkout API tests and the
  * checkout E2E journey: pick real products by property, seed a cart, place
- * an order, and compute what the order *should* cost.
+ * an order, close it again afterwards, and compute what the order *should*
+ * cost.
  *
- * Minimal local schemas: only the fields consumed here. The documented
- * product and invoice schemas are strict mirrors of the OpenAPI contract
- * and reject live responses (see the FIXME in invoiceSchema.ts).
+ * Every API call runs in its own `test.step`, so each one shows up as a
+ * named sub-step under whichever spec step called the helper.
  */
 
-const CatalogProductSchema = z.looseObject({
-    id: z.string(),
-    name: z.string(),
-    price: z.number(),
-    is_eco_friendly: z.boolean(),
-    is_rental: z.boolean(),
-    in_stock: z.boolean().nullable(),
-});
-
-const CatalogPageSchema = z.looseObject({
-    data: z.array(CatalogProductSchema),
-    last_page: z.int(),
-});
-
-const CartCreatedSchema = z.looseObject({ id: z.string() });
-
-const PostcodeLookupSchema = z.looseObject({
-    street: z.string(),
-    house_number: z.string(),
-    city: z.string(),
-    state: z.string(),
-    country: z.string(),
-    postcode: z.string(),
-});
-
-const InvoiceCreatedSchema = z.looseObject({ id: z.string() });
-
-export type CatalogProduct = zOutput<typeof CatalogProductSchema>;
+export type CatalogProduct = ProductListResponse['data'][number];
 
 /** One product line in a cart: a real product and how many of it. */
 export type CartLine = {
@@ -53,26 +47,26 @@ export type CartLine = {
 /** What an order is expected to cost, per the observed pricing rules. */
 export type ExpectedTotals = {
     subtotal: number;
-    /** 15 for a rental + purchase mix, otherwise 0 */
+    /** DiscountPercentages.COMBINATION for a rental + purchase mix, otherwise 0 */
     combinationDiscountPercentage: number;
-    /** 5 when the cart has an eco-friendly item and no combination discount */
+    /** DiscountPercentages.ECO when the cart has an eco item and no combination discount */
     ecoDiscountPercentage: number;
     /** The one discount that applies, in currency, rounded to cents */
     discountAmount: number;
     total: number;
 };
 
-/** Fixed lookup key: the API rejects billing addresses whose parts disagree. */
-const BILLING_LOOKUP = {
+/**
+ * Fixed billing lookup key, for the API checkout and the UI billing form
+ * alike: the API rejects billing addresses whose parts disagree, and the UI
+ * fills street, city and state from country + postcode + house number.
+ */
+export const BILLING_LOOKUP = {
     country: 'The Netherlands',
+    countryCode: 'NL',
     postcode: '1234AB',
+    houseNumber: '12',
 } as const;
-
-/** Combination discount for mixing a rental with a purchase. */
-const COMBINATION_DISCOUNT_PERCENTAGE = 15;
-
-/** Discount for carts containing an eco-friendly product. */
-const ECO_DISCOUNT_PERCENTAGE = 5;
 
 /**
  * Rounds a currency amount to cents.
@@ -105,23 +99,27 @@ export async function fetchCatalog(
         let lastPage = 1;
 
         do {
-            const { status, body } = await apiRequest({
-                method: 'GET',
-                url: `${ApiEndpoints.PRODUCTS}?page=${page}${query}`,
-                baseUrl: requireEnv('API_URL'),
+            const url = `${ApiEndpoints.PRODUCTS}?page=${page}${query}`;
+
+            await test.step(`GET ${url}`, async () => {
+                const { status, body } = await apiRequest({
+                    method: 'GET',
+                    url,
+                    baseUrl: requireEnv('API_URL'),
+                });
+
+                expect(status).toBe(200);
+                expect(ProductListResponseSchema.parse(body)).toBeTruthy();
+                const parsed = ProductListResponseSchema.parse(body);
+                products.push(...parsed.data);
+                lastPage = parsed.last_page;
             });
 
-            expect(status).toBe(200);
-            const parsed = CatalogPageSchema.parse(body);
-            products.push(...parsed.data);
-            lastPage = parsed.last_page;
             page += 1;
         } while (page <= lastPage);
     }
 
-    return products.filter(
-        (product) => product.is_rental || product.in_stock !== false
-    );
+    return products.filter((product) => product.is_rental || product.in_stock);
 }
 
 /**
@@ -166,24 +164,31 @@ export async function createCart(
     apiRequest: ApiRequestFn,
     lines: CartLine[]
 ): Promise<string> {
-    const { status, body } = await apiRequest({
-        method: 'POST',
-        url: ApiEndpoints.CARTS,
-        baseUrl: requireEnv('API_URL'),
-    });
-
-    expect(status).toBe(201);
-    const { id: cartId } = CartCreatedSchema.parse(body);
-
-    for (const { product, quantity } of lines) {
-        const { status: addStatus } = await apiRequest({
+    const cartId = await test.step(`POST ${ApiEndpoints.CARTS}`, async () => {
+        const { status, body } = await apiRequest({
             method: 'POST',
-            url: `${ApiEndpoints.CARTS}/${cartId}`,
+            url: ApiEndpoints.CARTS,
             baseUrl: requireEnv('API_URL'),
-            body: { product_id: product.id, quantity },
         });
 
-        expect(addStatus).toBe(200);
+        expect(status).toBe(201);
+        expect(CartCreatedResponseSchema.parse(body)).toBeTruthy();
+
+        return CartCreatedResponseSchema.parse(body).id;
+    });
+
+    for (const { product, quantity } of lines) {
+        await test.step(`POST ${ApiEndpoints.CARTS}/{id} -- ${quantity} x ${product.name}`, async () => {
+            const { status, body } = await apiRequest({
+                method: 'POST',
+                url: `${ApiEndpoints.CARTS}/${cartId}`,
+                baseUrl: requireEnv('API_URL'),
+                body: { product_id: product.id, quantity },
+            });
+
+            expect(status).toBe(200);
+            expect(CartItemAddedResponseSchema.parse(body)).toBeTruthy();
+        });
     }
 
     return cartId;
@@ -196,43 +201,122 @@ export async function createCart(
  * @param {ApiRequestFn} apiRequest - The apiRequest fixture.
  * @param {string} token - The buyer's bearer token.
  * @param {string} cartId - Cart to check out.
- * @returns {Promise<string>} The created invoice's id.
+ * @returns {Promise<InvoiceRef>} The created invoice's id, number and owner.
  */
 export async function placeOrder(
     apiRequest: ApiRequestFn,
     token: string,
     cartId: string
-): Promise<string> {
-    const { status: addressStatus, body: addressBody } = await apiRequest({
-        method: 'GET',
-        url: `${ApiEndpoints.POSTCODE_LOOKUP}?country=${encodeURIComponent(BILLING_LOOKUP.country)}&postcode=${BILLING_LOOKUP.postcode}`,
-        baseUrl: requireEnv('API_URL'),
+): Promise<InvoiceRef> {
+    const address =
+        await test.step(`GET ${ApiEndpoints.POSTCODE_LOOKUP}`, async () => {
+            const { status, body } = await apiRequest({
+                method: 'GET',
+                url: `${ApiEndpoints.POSTCODE_LOOKUP}?country=${encodeURIComponent(BILLING_LOOKUP.country)}&postcode=${BILLING_LOOKUP.postcode}`,
+                baseUrl: requireEnv('API_URL'),
+            });
+
+            expect(status).toBe(200);
+            expect(PostcodeLookupResponseSchema.parse(body)).toBeTruthy();
+
+            return PostcodeLookupResponseSchema.parse(body);
+        });
+
+    return test.step(`POST ${ApiEndpoints.INVOICES}`, async () => {
+        const { status, body } = await apiRequest({
+            method: 'POST',
+            url: ApiEndpoints.INVOICES,
+            baseUrl: requireEnv('API_URL'),
+            headers: token,
+            body: {
+                billing_street: `${address.street} ${address.house_number}`,
+                billing_city: address.city,
+                billing_state: address.state,
+                billing_country: address.country,
+                billing_postal_code: address.postcode,
+                payment_method: PaymentMethods.CASH_ON_DELIVERY,
+                payment_details: {},
+                cart_id: cartId,
+            },
+        });
+
+        // OpenAPI documents 200; the live API returns 201 for a created invoice.
+        expect(status).toBe(201);
+        // Projection, not InvoiceResponseSchema -- see the live-drift note
+        // in invoiceSchema.ts.
+        expect(InvoiceRefProjection.parse(body)).toBeTruthy();
+
+        return InvoiceRefProjection.parse(body);
+    });
+}
+
+/**
+ * Cleanup for a test-created invoice. The Invoice API has no DELETE, so the
+ * closest available revert is to close the order: set it to the terminal
+ * COMPLETED status (as admin), then read it back to confirm the change was
+ * persisted rather than trusting the PUT's own response.
+ *
+ * The token's identity is confirmed first: the shared instance can hand back
+ * another user's session on login (README, Known limitations), and a
+ * customer token would make the read-back fail with a misleading 404.
+ *
+ * @param {ApiRequestFn} apiRequest - The apiRequest fixture.
+ * @param {string} adminToken - An admin bearer token.
+ * @param {string} invoiceId - The invoice to close.
+ * @returns {Promise<void>} Resolves once the closed status is confirmed.
+ */
+export async function closeInvoice(
+    apiRequest: ApiRequestFn,
+    adminToken: string,
+    invoiceId: string
+): Promise<void> {
+    const statusUrl = `${ApiEndpoints.INVOICES}/${invoiceId}${ApiEndpointSuffixes.STATUS}`;
+
+    await test.step(`GET ${ApiEndpoints.CURRENT_USER} -- confirm admin token`, async () => {
+        const { status, body } = await apiRequest({
+            method: 'GET',
+            url: ApiEndpoints.CURRENT_USER,
+            baseUrl: requireEnv('API_URL'),
+            headers: adminToken,
+        });
+
+        expect(status).toBe(200);
+        expect(CurrentUserResponseSchema.parse(body)).toBeTruthy();
+        expect(
+            CurrentUserResponseSchema.parse(body).role,
+            'Cleanup token is not an admin session -- see README, Known limitations'
+        ).toBe(Roles.ADMIN);
     });
 
-    expect(addressStatus).toBe(200);
-    const address = PostcodeLookupSchema.parse(addressBody);
+    await test.step(`PUT ${ApiEndpoints.INVOICES}/{id}${ApiEndpointSuffixes.STATUS} -- close test order`, async () => {
+        const { status } = await apiRequest({
+            method: 'PUT',
+            url: statusUrl,
+            baseUrl: requireEnv('API_URL'),
+            headers: adminToken,
+            body: {
+                status: InvoiceStatus.COMPLETED,
+                status_message: generateStatusMessage(),
+            },
+        });
 
-    const { status, body } = await apiRequest({
-        method: 'POST',
-        url: ApiEndpoints.INVOICES,
-        baseUrl: requireEnv('API_URL'),
-        headers: token,
-        body: {
-            billing_street: `${address.street} ${address.house_number}`,
-            billing_city: address.city,
-            billing_state: address.state,
-            billing_country: address.country,
-            billing_postal_code: address.postcode,
-            payment_method: PaymentMethods.CASH_ON_DELIVERY,
-            payment_details: {},
-            cart_id: cartId,
-        },
+        expect(status).toBe(200);
     });
 
-    // OpenAPI documents 200; the live API returns 201 for a created invoice.
-    expect(status).toBe(201);
+    await test.step(`GET ${ApiEndpoints.INVOICES}/{id} -- confirm closed`, async () => {
+        const { status, body } = await apiRequest({
+            method: 'GET',
+            url: `${ApiEndpoints.INVOICES}/${invoiceId}`,
+            baseUrl: requireEnv('API_URL'),
+            headers: adminToken,
+        });
 
-    return InvoiceCreatedSchema.parse(body).id;
+        expect(status).toBe(200);
+        expect(InvoiceStatusProjection.parse(body)).toBeTruthy();
+        expect(InvoiceStatusProjection.parse(body).status).toBe(
+            InvoiceStatus.COMPLETED
+        );
+    });
 }
 
 /**
@@ -241,8 +325,9 @@ export async function placeOrder(
  * The pricing rules are undocumented; these were established by checking
  * out probe carts and confirmed against the cart page, which shows the
  * same discount line before checkout:
- * - a rental mixed with a purchased item earns a 15% combination discount;
- * - otherwise, any eco-friendly item earns 5% off the *whole* subtotal;
+ * - a rental mixed with a purchased item earns the combination discount;
+ * - otherwise, any eco-friendly item earns the eco discount off the *whole*
+ *   subtotal;
  * - the two never stack -- the combination discount wins;
  * - the total is the subtotal minus the discount, rounded to cents.
  *
@@ -262,10 +347,10 @@ export function expectedTotals(lines: CartLine[]): ExpectedTotals {
     const hasEco = lines.some(({ product }) => product.is_eco_friendly);
 
     const combinationDiscountPercentage =
-        hasRental && hasPurchase ? COMBINATION_DISCOUNT_PERCENTAGE : 0;
+        hasRental && hasPurchase ? DiscountPercentages.COMBINATION : 0;
     const ecoDiscountPercentage =
         combinationDiscountPercentage === 0 && hasEco
-            ? ECO_DISCOUNT_PERCENTAGE
+            ? DiscountPercentages.ECO
             : 0;
 
     const discount =
@@ -279,4 +364,19 @@ export function expectedTotals(lines: CartLine[]): ExpectedTotals {
         discountAmount: roundToCents(discount),
         total: roundToCents(subtotal - discount),
     };
+}
+
+/**
+ * Whether a cart total leaves fractional cents once a percentage discount is
+ * applied -- the precondition for observing an unrounded discount amount.
+ *
+ * @param {number} amount - The cart subtotal.
+ * @param {number} percentage - The discount percentage.
+ * @returns {boolean} True when the discount is not a whole number of cents.
+ */
+export function discountHasFractionalCents(
+    amount: number,
+    percentage: number
+): boolean {
+    return (Math.round(amount * 100) * percentage) % 100 !== 0;
 }

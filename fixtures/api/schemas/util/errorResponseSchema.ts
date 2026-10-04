@@ -35,6 +35,16 @@ export const NotFoundResponseSchema = z.strictObject({
 });
 
 /**
+ * Schema for the 404 returned by `GET /users/{id}` -- for an id that does
+ * not exist *and* for another customer's id (verified live). Unlike the
+ * usual `{"message": ...}` 404, it carries `{"error": "You are not
+ * authorized to view this user."}`.
+ */
+export const UserNotFoundResponseSchema = z.strictObject({
+    error: z.string(),
+});
+
+/**
  * Schema for 422 Unprocessable Entity (validation) responses.
  * Live shape: a map of field name -> array of validation messages.
  */
@@ -47,6 +57,7 @@ export const UnprocessableEntityResponseSchema = z.record(
 export type UnauthorizedResponse = zOutput<typeof UnauthorizedResponseSchema>;
 export type ForbiddenResponse = zOutput<typeof ForbiddenResponseSchema>;
 export type NotFoundResponse = zOutput<typeof NotFoundResponseSchema>;
+export type UserNotFoundResponse = zOutput<typeof UserNotFoundResponseSchema>;
 export type UnprocessableEntityResponse = zOutput<
     typeof UnprocessableEntityResponseSchema
 >;

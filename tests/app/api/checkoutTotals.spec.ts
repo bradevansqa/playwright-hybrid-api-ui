@@ -1,12 +1,18 @@
-import { z } from 'zod/v4';
 import { expect, test } from '../../../fixtures/pom/test-options';
-import { ApiEndpoints } from '../../../enums/app/app';
+import { ApiEndpoints, DiscountPercentages } from '../../../enums/app/app';
 import { Roles } from '../../../enums/util/roles';
 import { requireEnv } from '../../../helpers/util/requireEnv';
 import {
+    InvoiceRef,
+    InvoiceTotals,
+    InvoiceTotalsProjection,
+} from '../../../fixtures/api/schemas/app/invoiceSchema';
+import {
     CartLine,
     CatalogProduct,
+    closeInvoice,
     createCart,
+    discountHasFractionalCents,
     expectedTotals,
     fetchCatalog,
     pickProduct,
@@ -20,36 +26,17 @@ import {
  * in helpers/app/checkout.ts for the pricing rules and how they were
  * established -- they are not documented anywhere).
  *
- * Each scenario places one real order as the customer. The Invoice API has
- * no DELETE, so these invoices persist on the shared instance -- the same
- * trade-off the `seededInvoice` fixture already makes.
+ * Each test places one real order as the customer. The Invoice API has no
+ * DELETE, so `afterEach` closes every order a test created (COMPLETED, set
+ * as admin and read back) -- the closest available revert, the same
+ * trade-off the `seededInvoice` fixture makes.
+ *
+ * Invoices are parsed with `InvoiceTotalsProjection` rather than the full
+ * contract schema -- see the live-drift note in invoiceSchema.ts.
  *
  * Products are chosen by property at run time, never by id, because the
  * shared instance is periodically reset and every id changes.
  */
-
-/**
- * Minimal local schema for the fields asserted here. The documented
- * `InvoiceResponseSchema` is a strict contract mirror that rejects live
- * responses (see the FIXME in invoiceSchema.ts), so it is not used.
- */
-const InvoiceTotalsSchema = z.looseObject({
-    subtotal: z.number(),
-    additional_discount_percentage: z.number().nullable(),
-    additional_discount_amount: z.number().nullable(),
-    eco_discount_percentage: z.number().nullable(),
-    eco_discount_amount: z.number().nullable(),
-    total: z.number(),
-    invoicelines: z.array(
-        z.looseObject({
-            product_id: z.string(),
-            unit_price: z.number(),
-            quantity: z.int(),
-        })
-    ),
-});
-
-type InvoiceTotals = z.output<typeof InvoiceTotalsSchema>;
 
 const isPurchase = (product: CatalogProduct): boolean => !product.is_rental;
 const isEcoPurchase = (product: CatalogProduct): boolean =>
@@ -57,6 +44,13 @@ const isEcoPurchase = (product: CatalogProduct): boolean =>
 const isRegularPurchase = (product: CatalogProduct): boolean =>
     !product.is_eco_friendly && !product.is_rental;
 const isRental = (product: CatalogProduct): boolean => product.is_rental;
+
+/**
+ * Orders placed at the same moment by the numbering test. Five makes a
+ * collision near-certain: three concurrent orders already produced a
+ * duplicate on the first live try.
+ */
+const CONCURRENT_ORDERS = 5;
 
 /** Carts covering each pricing rule, built from the live catalog. */
 const SCENARIOS: ReadonlyArray<{
@@ -85,7 +79,8 @@ const SCENARIOS: ReadonlyArray<{
         },
     },
     {
-        description: 'an eco-friendly item, earning 5% off the whole subtotal',
+        description:
+            'an eco-friendly item, earning the eco discount on the whole subtotal',
         lines: (catalog): CartLine[] => [
             {
                 product: pickProduct(
@@ -107,7 +102,7 @@ const SCENARIOS: ReadonlyArray<{
     },
     {
         description:
-            'a rental with a purchase, earning the 15% combination discount',
+            'a rental with a purchase, earning the combination discount',
         lines: (catalog): CartLine[] => [
             {
                 product: pickProduct(
@@ -146,26 +141,49 @@ const SCENARIOS: ReadonlyArray<{
 test.describe('api checkout totals', () => {
     test.use({ role: Roles.CUSTOMER });
 
+    /** Orders placed by the current test, closed again in afterEach. */
+    let createdInvoiceIds: string[] = [];
+
+    test.beforeEach(() => {
+        createdInvoiceIds = [];
+    });
+
+    test.afterEach(async ({ apiRequest, tokenFor }) => {
+        for (const invoiceId of createdInvoiceIds) {
+            const adminToken =
+                await test.step('GIVEN an admin token for cleanup', async () =>
+                    tokenFor(Roles.ADMIN));
+
+            await closeInvoice(apiRequest, adminToken, invoiceId);
+        }
+    });
+
     for (const scenario of SCENARIOS) {
         test(
             `should invoice a cart with ${scenario.description}`,
             { tag: '@api' },
             async ({ apiRequest, authToken }) => {
                 let lines: CartLine[];
+                let cartId: string;
+                let invoiceId: string;
                 let invoice: InvoiceTotals;
 
-                await test.step('GIVEN a cart seeded via the API from the live catalog', async () => {
+                await test.step('GIVEN products picked from the live catalog', async () => {
                     lines = scenario.lines(await fetchCatalog(apiRequest));
                 });
 
-                await test.step('WHEN the customer checks it out', async () => {
-                    const cartId = await createCart(apiRequest, lines);
-                    const invoiceId = await placeOrder(
-                        apiRequest,
-                        authToken,
-                        cartId
-                    );
+                await test.step('AND a cart seeded with them via the API', async () => {
+                    cartId = await createCart(apiRequest, lines);
+                });
 
+                await test.step('WHEN the customer checks it out', async () => {
+                    invoiceId = (
+                        await placeOrder(apiRequest, authToken, cartId)
+                    ).id;
+                    createdInvoiceIds.push(invoiceId);
+                });
+
+                await test.step('AND the invoice is read back', async () => {
                     const { status, body } = await apiRequest({
                         method: 'GET',
                         url: `${ApiEndpoints.INVOICES}/${invoiceId}`,
@@ -174,7 +192,8 @@ test.describe('api checkout totals', () => {
                     });
 
                     expect(status).toBe(200);
-                    invoice = InvoiceTotalsSchema.parse(body);
+                    expect(InvoiceTotalsProjection.parse(body)).toBeTruthy();
+                    invoice = InvoiceTotalsProjection.parse(body);
                 });
 
                 await test.step('THEN every invoice line carries the catalog price and quantity', async () => {
@@ -226,44 +245,53 @@ test.describe('api checkout totals', () => {
     }
 
     /*
-     * Money is reported inconsistently: `eco_discount_amount` is rounded to
-     * cents (1.93), but `additional_discount_amount` is returned with raw
-     * float precision (e.g. 22.302 for 15% of 148.68). A client displaying or
-     * summing the raw field gets a figure that matches neither the cart page
-     * ("- $22.30") nor the invoice total. Asserted as it should behave and
-     * marked `test.fail()`: green while the flaw exists, failing loudly once
-     * fixed.
+     * FIXME: no ticket yet -- money is reported inconsistently, to report
+     * upstream. `eco_discount_amount` is rounded to cents (1.93), but
+     * `additional_discount_amount` is returned with raw float precision (e.g.
+     * 22.302 for 15% of 148.68). A client displaying or summing the raw field
+     * gets a figure that matches neither the cart page ("- $22.30") nor the
+     * invoice total. Asserted as it should behave and marked `test.fail()`
+     * rather than `test.skip` (repo convention, see roleAccess.spec.ts).
      */
     test.fail(
         'should report the combination discount amount rounded to cents',
         { tag: '@api' },
         async ({ apiRequest, authToken }) => {
+            let rental: CatalogProduct;
+            let purchase: CatalogProduct;
+            let cartId: string;
+            let invoiceId: string;
             let invoice: InvoiceTotals;
 
-            await test.step('GIVEN an order whose 15% discount is not a whole number of cents', async () => {
+            await test.step('GIVEN a rental and a purchase whose combination discount is not a whole number of cents', async () => {
                 const catalog = await fetchCatalog(apiRequest);
-                const rental = pickProduct(catalog, isRental, 'a rental');
-                const purchase = pickProduct(
+                rental = pickProduct(catalog, isRental, 'a rental');
+                purchase = pickProduct(
                     catalog,
                     (product) =>
                         isPurchase(product) &&
-                        (Math.round((product.price + rental.price) * 100) *
-                            15) %
-                            100 !==
-                            0,
-                    'a purchase whose total with the rental leaves fractional cents at 15%'
+                        discountHasFractionalCents(
+                            roundToCents(product.price + rental.price),
+                            DiscountPercentages.COMBINATION
+                        ),
+                    'a purchase whose total with the rental leaves fractional cents'
                 );
+            });
 
-                const cartId = await createCart(apiRequest, [
+            await test.step('AND a cart seeded with them via the API', async () => {
+                cartId = await createCart(apiRequest, [
                     { product: purchase, quantity: 1 },
                     { product: rental, quantity: 1 },
                 ]);
-                const invoiceId = await placeOrder(
-                    apiRequest,
-                    authToken,
-                    cartId
-                );
+            });
 
+            await test.step('WHEN the customer checks it out', async () => {
+                invoiceId = (await placeOrder(apiRequest, authToken, cartId))
+                    .id;
+                createdInvoiceIds.push(invoiceId);
+            });
+
+            await test.step('AND the invoice is read back', async () => {
                 const { status, body } = await apiRequest({
                     method: 'GET',
                     url: `${ApiEndpoints.INVOICES}/${invoiceId}`,
@@ -272,13 +300,67 @@ test.describe('api checkout totals', () => {
                 });
 
                 expect(status).toBe(200);
-                invoice = InvoiceTotalsSchema.parse(body);
+                expect(InvoiceTotalsProjection.parse(body)).toBeTruthy();
+                invoice = InvoiceTotalsProjection.parse(body);
             });
 
             await test.step('THEN the discount amount is a whole number of cents (currently is not)', async () => {
                 const amount = invoice.additional_discount_amount ?? 0;
 
                 expect(amount).toBe(roundToCents(amount));
+            });
+        }
+    );
+
+    /*
+     * FIXME: no ticket yet -- invoice numbers are not unique, to report
+     * upstream. Orders placed at the same moment can be given the same
+     * invoice number (verified live: three concurrent orders came back as
+     * INV-…21, INV-…22, INV-…21; two parallel UI checkouts collided the same
+     * way). The number is what the customer sees on the confirmation page
+     * and the PDF, and what invoice search keys on, so a duplicate points a
+     * customer -- and the checkout E2E test -- at someone else's order.
+     * `test.fail()` per the repo convention (see roleAccess.spec.ts).
+     */
+    test.fail(
+        'should give orders placed at the same moment distinct invoice numbers',
+        { tag: '@api' },
+        async ({ apiRequest, authToken }) => {
+            let product: CatalogProduct;
+            let cartIds: string[];
+            let invoices: InvoiceRef[];
+
+            await test.step('GIVEN a regular product from the live catalog', async () => {
+                product = pickProduct(
+                    await fetchCatalog(apiRequest),
+                    isRegularPurchase,
+                    'a regular purchase'
+                );
+            });
+
+            await test.step(`AND ${CONCURRENT_ORDERS} carts seeded with it via the API`, async () => {
+                cartIds = await Promise.all(
+                    Array.from({ length: CONCURRENT_ORDERS }, () =>
+                        createCart(apiRequest, [{ product, quantity: 1 }])
+                    )
+                );
+            });
+
+            await test.step('WHEN the customer checks them all out at the same moment', async () => {
+                invoices = await Promise.all(
+                    cartIds.map((cartId) =>
+                        placeOrder(apiRequest, authToken, cartId)
+                    )
+                );
+                createdInvoiceIds.push(...invoices.map(({ id }) => id));
+            });
+
+            await test.step('THEN every order has its own invoice number (currently can repeat)', async () => {
+                const numbers = invoices.map(
+                    ({ invoice_number }) => invoice_number
+                );
+
+                expect(new Set(numbers).size).toBe(numbers.length);
             });
         }
     );

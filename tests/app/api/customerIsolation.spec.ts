@@ -1,10 +1,22 @@
-import { z } from 'zod/v4';
-import type { output as zOutput } from 'zod/v4';
+import { generateStatusMessage } from '../../../test-data/factories/app/invoice.factory';
 import { expect, test } from '../../../fixtures/pom/test-options';
-import { ApiEndpoints, InvoiceStatus } from '../../../enums/app/app';
+import {
+    ApiEndpoints,
+    ApiEndpointSuffixes,
+    InvoiceNumberFormat,
+    InvoiceStatus,
+} from '../../../enums/app/app';
 import { Roles } from '../../../enums/util/roles';
 import { CurrentUserResponseSchema } from '../../../fixtures/api/schemas/app/userSchema';
-import { NotFoundResponseSchema } from '../../../fixtures/api/schemas/util/errorResponseSchema';
+import {
+    InvoicePageProjection,
+    InvoiceRef,
+    InvoiceStatusProjection,
+} from '../../../fixtures/api/schemas/app/invoiceSchema';
+import {
+    NotFoundResponseSchema,
+    UserNotFoundResponseSchema,
+} from '../../../fixtures/api/schemas/util/errorResponseSchema';
 import { requireEnv } from '../../../helpers/util/requireEnv';
 import type { ApiRequestFn } from '../../../fixtures/api/api-types';
 
@@ -34,29 +46,30 @@ import type { ApiRequestFn } from '../../../fixtures/api/api-types';
  * Nothing here changes data: the profile PATCH re-sends the owner's current
  * first name, and the invoice status change targets the `seededInvoice`
  * fixture, whose teardown restores the original status.
+ *
+ * Invoice responses are parsed with the projections from invoiceSchema.ts
+ * (see its live-drift note): the full contract schema rejects every live
+ * invoice, and that drift is asserted in invoice.spec.ts.
  */
 
-/** Minimal local schemas: only the fields these tests consume. */
-const InvoiceSummarySchema = z.looseObject({
-    id: z.string(),
-    invoice_number: z.string(),
-    user_id: z.string(),
-});
-
-const InvoicePageSchema = z.looseObject({
-    data: z.array(InvoiceSummarySchema),
-    total: z.int(),
-});
-
-const InvoiceStatusSchema = z.looseObject({
-    id: z.string(),
-    status: z.string(),
-});
-
-type InvoiceSummary = zOutput<typeof InvoiceSummarySchema>;
+/**
+ * Path-parameter fuzz values (api-testing: fuzz every path parameter).
+ * Field-specific to these id parameters, so inline.
+ */
+const INVALID_PATH_IDS = [
+    { description: 'numeric string', value: '99999' },
+    { description: 'boolean-like string', value: 'true' },
+    { description: 'special characters', value: '<script>' },
+    { description: 'SQL injection attempt', value: '1 OR 1=1' },
+    {
+        description: 'well-formed but unknown ULID',
+        value: '01ZZZZZZZZZZZZZZZZZZZZZZZZ',
+    },
+] as const;
 
 /**
  * Resolves the user behind a token, asserting it is the expected account.
+ * Makes exactly one API call, so callers wrap it in one `test.step`.
  *
  * @param {ApiRequestFn} apiRequest - The apiRequest fixture.
  * @param {string} token - Bearer token to identify.
@@ -76,6 +89,7 @@ async function userIdFor(
     });
 
     expect(status).toBe(200);
+    expect(CurrentUserResponseSchema.parse(body)).toBeTruthy();
     const me = CurrentUserResponseSchema.parse(body);
     expect(me.email).toBe(expectedEmail);
 
@@ -84,15 +98,16 @@ async function userIdFor(
 
 /**
  * Returns one invoice owned by the caller, read from their own invoice list.
+ * Makes exactly one API call, so callers wrap it in one `test.step`.
  *
  * @param {ApiRequestFn} apiRequest - The apiRequest fixture.
  * @param {string} token - The owner's bearer token.
- * @returns {Promise<InvoiceSummary>} An invoice the owner can see.
+ * @returns {Promise<InvoiceRef>} An invoice the owner can see.
  */
 async function anOwnInvoice(
     apiRequest: ApiRequestFn,
     token: string
-): Promise<InvoiceSummary> {
+): Promise<InvoiceRef> {
     const { status, body } = await apiRequest({
         method: 'GET',
         url: ApiEndpoints.INVOICES,
@@ -101,7 +116,8 @@ async function anOwnInvoice(
     });
 
     expect(status).toBe(200);
-    const page = InvoicePageSchema.parse(body);
+    expect(InvoicePageProjection.parse(body)).toBeTruthy();
+    const page = InvoicePageProjection.parse(body);
     expect(
         page.total,
         'The customer account needs at least one invoice'
@@ -117,15 +133,23 @@ test.describe('api cross-customer isolation', () => {
         "should not let one customer read another customer's invoice",
         { tag: '@api' },
         async ({ apiRequest, authToken, tokenFor }) => {
-            const otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
-            let invoice: InvoiceSummary;
+            let otherToken: string;
+            let ownerId: string;
+            let invoice: InvoiceRef;
 
-            await test.step('GIVEN two tokens that belong to two different customers', async () => {
-                const ownerId = await userIdFor(
+            await test.step('GIVEN a token for the second customer', async () => {
+                otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
+            });
+
+            await test.step('AND the first token belongs to the customer', async () => {
+                ownerId = await userIdFor(
                     apiRequest,
                     authToken,
                     requireEnv('CUSTOMER_EMAIL')
                 );
+            });
+
+            await test.step('AND the second token belongs to a different customer', async () => {
                 const otherId = await userIdFor(
                     apiRequest,
                     otherToken,
@@ -134,9 +158,11 @@ test.describe('api cross-customer isolation', () => {
                 expect(otherId).not.toBe(ownerId);
             });
 
-            await test.step('AND the owner can read one of their invoices', async () => {
+            await test.step('AND the customer has an invoice', async () => {
                 invoice = await anOwnInvoice(apiRequest, authToken);
+            });
 
+            await test.step('AND the owner can read it', async () => {
                 const { status } = await apiRequest({
                     method: 'GET',
                     url: `${ApiEndpoints.INVOICES}/${invoice.id}`,
@@ -165,10 +191,15 @@ test.describe('api cross-customer isolation', () => {
         "should only return a customer's own invoices from invoice search",
         { tag: '@api' },
         async ({ apiRequest, tokenFor }) => {
-            const otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
+            let otherToken: string;
             let otherId: string;
+            let results: InvoiceRef[];
 
-            await test.step('GIVEN the token belongs to the second customer', async () => {
+            await test.step('GIVEN a token for the second customer', async () => {
+                otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
+            });
+
+            await test.step('AND it belongs to the second customer', async () => {
                 otherId = await userIdFor(
                     apiRequest,
                     otherToken,
@@ -176,18 +207,17 @@ test.describe('api cross-customer isolation', () => {
                 );
             });
 
-            let results: InvoiceSummary[];
-
-            await test.step('WHEN they search across all invoice numbers', async () => {
+            await test.step('WHEN they search for every invoice number', async () => {
                 const { status, body } = await apiRequest({
                     method: 'GET',
-                    url: `${ApiEndpoints.INVOICES_SEARCH}?q=INV`,
+                    url: `${ApiEndpoints.INVOICES_SEARCH}?q=${InvoiceNumberFormat.PREFIX}`,
                     baseUrl: requireEnv('API_URL'),
                     headers: otherToken,
                 });
 
                 expect(status).toBe(200);
-                results = InvoicePageSchema.parse(body).data;
+                expect(InvoicePageProjection.parse(body)).toBeTruthy();
+                results = InvoicePageProjection.parse(body).data;
             });
 
             await test.step('THEN results are returned', async () => {
@@ -206,16 +236,18 @@ test.describe('api cross-customer isolation', () => {
         "should not let one customer read another customer's profile",
         { tag: '@api' },
         async ({ apiRequest, authToken, tokenFor }) => {
-            const otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
+            let otherToken: string;
             let ownerId: string;
 
-            await test.step('GIVEN the owner can read their own profile', async () => {
+            await test.step('GIVEN the token belongs to the customer', async () => {
                 ownerId = await userIdFor(
                     apiRequest,
                     authToken,
                     requireEnv('CUSTOMER_EMAIL')
                 );
+            });
 
+            await test.step('AND the owner can read their own profile', async () => {
                 const { status } = await apiRequest({
                     method: 'GET',
                     url: `${ApiEndpoints.USERS}/${ownerId}`,
@@ -226,13 +258,15 @@ test.describe('api cross-customer isolation', () => {
                 expect(status).toBe(200);
             });
 
+            await test.step('AND a token for the second customer', async () => {
+                otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
+            });
+
             await test.step('WHEN the other customer reads it THEN it is not found', async () => {
-                // The body is `{"error": "You are not authorized to view this
-                // user."}` -- a 404 status worded like a 403, and a different
-                // shape from the API's usual `{"message": ...}` 404. It is the
-                // same body for a user id that does not exist at all, so it
-                // does not leak which ids are real.
-                const { status } = await apiRequest({
+                // Same body as for an id that does not exist at all, so it
+                // does not leak which ids are real -- see
+                // UserNotFoundResponseSchema for the odd error shape.
+                const { status, body } = await apiRequest({
                     method: 'GET',
                     url: `${ApiEndpoints.USERS}/${ownerId}`,
                     baseUrl: requireEnv('API_URL'),
@@ -240,6 +274,7 @@ test.describe('api cross-customer isolation', () => {
                 });
 
                 expect(status).toBe(404);
+                expect(UserNotFoundResponseSchema.parse(body)).toBeTruthy();
             });
         }
     );
@@ -248,26 +283,29 @@ test.describe('api cross-customer isolation', () => {
         "should not let one customer update another customer's profile",
         { tag: '@api' },
         async ({ apiRequest, authToken, tokenFor }) => {
-            const otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
+            let otherToken: string;
             let ownerId: string;
             let unchangedName: { first_name: string };
 
-            await test.step('GIVEN the owner can PATCH their own profile with its current first name', async () => {
-                const { status: meStatus, body: meBody } = await apiRequest({
+            await test.step('GIVEN the customer reads their current first name', async () => {
+                const { status, body } = await apiRequest({
                     method: 'GET',
                     url: ApiEndpoints.CURRENT_USER,
                     baseUrl: requireEnv('API_URL'),
                     headers: authToken,
                 });
 
-                expect(meStatus).toBe(200);
-                const me = CurrentUserResponseSchema.parse(meBody);
+                expect(status).toBe(200);
+                expect(CurrentUserResponseSchema.parse(body)).toBeTruthy();
+                const me = CurrentUserResponseSchema.parse(body);
                 expect(me.email).toBe(requireEnv('CUSTOMER_EMAIL'));
                 ownerId = me.id;
                 // Re-sending the current value: even if the denial below
                 // ever regresses, no profile is actually modified.
                 unchangedName = { first_name: me.first_name };
+            });
 
+            await test.step('AND the owner can PATCH their own profile with it', async () => {
                 const { status } = await apiRequest({
                     method: 'PATCH',
                     url: `${ApiEndpoints.USERS}/${ownerId}`,
@@ -277,6 +315,10 @@ test.describe('api cross-customer isolation', () => {
                 });
 
                 expect(status).toBe(200);
+            });
+
+            await test.step('AND a token for the second customer', async () => {
+                otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
             });
 
             await test.step('WHEN the other customer sends the same PATCH THEN it is forbidden', async () => {
@@ -293,32 +335,81 @@ test.describe('api cross-customer isolation', () => {
         }
     );
 
+    for (const { description, value } of INVALID_PATH_IDS) {
+        test(
+            `should not find an invoice, its PDF or a user for an invalid id - ${description}`,
+            { tag: '@api' },
+            async ({ apiRequest, authToken }) => {
+                const id = encodeURIComponent(value);
+
+                await test.step('WHEN the customer reads an invoice by that id THEN it is not found', async () => {
+                    const { status, body } = await apiRequest({
+                        method: 'GET',
+                        url: `${ApiEndpoints.INVOICES}/${id}`,
+                        baseUrl: requireEnv('API_URL'),
+                        headers: authToken,
+                    });
+
+                    expect(status).toBe(404);
+                    expect(NotFoundResponseSchema.parse(body)).toBeTruthy();
+                });
+
+                await test.step('AND its PDF is not found', async () => {
+                    const { status, body } = await apiRequest({
+                        method: 'GET',
+                        url: `${ApiEndpoints.INVOICES}/${id}${ApiEndpointSuffixes.DOWNLOAD_PDF}`,
+                        baseUrl: requireEnv('API_URL'),
+                        headers: authToken,
+                    });
+
+                    expect(status).toBe(404);
+                    expect(NotFoundResponseSchema.parse(body)).toBeTruthy();
+                });
+
+                await test.step('AND a user with that id is not found', async () => {
+                    const { status, body } = await apiRequest({
+                        method: 'GET',
+                        url: `${ApiEndpoints.USERS}/${id}`,
+                        baseUrl: requireEnv('API_URL'),
+                        headers: authToken,
+                    });
+
+                    expect(status).toBe(404);
+                    expect(UserNotFoundResponseSchema.parse(body)).toBeTruthy();
+                });
+            }
+        );
+    }
+
     /*
-     * Broken object-level authorisation: `GET /invoices/{id}` correctly hides
-     * another customer's invoice (404), but the PDF of that same invoice is
-     * served to any logged-in customer who knows its invoice number -- the
-     * customer's name, billing address and order lines. Invoice numbers are
-     * sequential (`INV-2026000002x`), so they are trivially guessable.
+     * FIXME: no ticket yet -- broken object-level authorisation, to report
+     * upstream. `GET /invoices/{id}` correctly hides another customer's
+     * invoice (404), but the PDF of that same invoice is served to any
+     * logged-in customer who knows its invoice number -- the customer's
+     * name, billing address and order lines. Invoice numbers are sequential,
+     * so they are trivially guessable.
      *
-     * Asserted as it should behave and marked `test.fail()`, the same
-     * convention as roleAccess.spec.ts: it stays green while the flaw exists
-     * and fails loudly -- prompting removal of `test.fail()` -- once fixed.
-     * The PDF body itself is never read, so no customer data lands in the
-     * report.
+     * Asserted as it should behave and marked `test.fail()` rather than
+     * `test.skip` (repo convention, see roleAccess.spec.ts): it keeps running,
+     * stays green while the flaw exists, and fails loudly -- prompting
+     * removal of `test.fail()` -- once fixed. The PDF body itself is never
+     * read, so no customer data lands in the report.
      */
     test.fail(
         "should not let one customer download another customer's invoice PDF",
         { tag: '@api' },
         async ({ apiRequest, authToken, tokenFor }) => {
-            const otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
-            let invoice: InvoiceSummary;
+            let otherToken: string;
+            let invoice: InvoiceRef;
 
-            await test.step('GIVEN the owner can download the PDF of one of their invoices', async () => {
+            await test.step('GIVEN the customer has an invoice', async () => {
                 invoice = await anOwnInvoice(apiRequest, authToken);
+            });
 
+            await test.step('AND the owner can download its PDF', async () => {
                 const { status } = await apiRequest({
                     method: 'GET',
-                    url: `${ApiEndpoints.INVOICES}/${invoice.invoice_number}/download-pdf`,
+                    url: `${ApiEndpoints.INVOICES}/${invoice.invoice_number}${ApiEndpointSuffixes.DOWNLOAD_PDF}`,
                     baseUrl: requireEnv('API_URL'),
                     headers: authToken,
                 });
@@ -326,7 +417,11 @@ test.describe('api cross-customer isolation', () => {
                 expect(status).toBe(200);
             });
 
-            await test.step('AND the second token belongs to a different customer', async () => {
+            await test.step('AND a token for the second customer', async () => {
+                otherToken = await tokenFor(Roles.SECOND_CUSTOMER);
+            });
+
+            await test.step('AND it belongs to a different customer', async () => {
                 await userIdFor(
                     apiRequest,
                     otherToken,
@@ -335,24 +430,26 @@ test.describe('api cross-customer isolation', () => {
             });
 
             await test.step('WHEN the other customer requests the same PDF THEN it should not be found (currently is served)', async () => {
-                const { status } = await apiRequest({
+                const { status, body } = await apiRequest({
                     method: 'GET',
-                    url: `${ApiEndpoints.INVOICES}/${invoice.invoice_number}/download-pdf`,
+                    url: `${ApiEndpoints.INVOICES}/${invoice.invoice_number}${ApiEndpointSuffixes.DOWNLOAD_PDF}`,
                     baseUrl: requireEnv('API_URL'),
                     headers: otherToken,
                 });
 
                 expect(status).toBe(404);
+                expect(NotFoundResponseSchema.parse(body)).toBeTruthy();
             });
         }
     );
 
     /*
-     * Broken authorisation on writes: `PUT /invoices/{id}/status` is an
-     * admin operation (the admin "Edit Order" screen), yet a customer token
-     * changes the status of an invoice the customer does not own -- here,
-     * an admin-owned invoice from `seededInvoice`, whose teardown reverts
-     * the status whether or not this test changed it.
+     * FIXME: no ticket yet -- broken authorisation on writes, to report
+     * upstream. `PUT /invoices/{id}/status` is an admin operation (the admin
+     * "Edit Order" screen), yet a customer token changes the status of an
+     * invoice the customer does not own -- here, an admin-owned invoice from
+     * `seededInvoice`, whose teardown reverts the status whether or not this
+     * test changed it. `test.fail()` per the convention above.
      */
     test.fail(
         'should not let a customer change the status of an invoice they do not own',
@@ -375,28 +472,35 @@ test.describe('api cross-customer isolation', () => {
             await test.step('WHEN the customer sets its status to ON_HOLD THEN it should not be found (currently succeeds)', async () => {
                 const { status } = await apiRequest({
                     method: 'PUT',
-                    url: `${ApiEndpoints.INVOICES}/${seededInvoice.id}/status`,
+                    url: `${ApiEndpoints.INVOICES}/${seededInvoice.id}${ApiEndpointSuffixes.STATUS}`,
                     baseUrl: requireEnv('API_URL'),
                     headers: authToken,
                     body: {
                         status: InvoiceStatus.ON_HOLD,
-                        status_message: 'Cross-customer isolation check',
+                        status_message: generateStatusMessage(),
                     },
                 });
 
                 expect(status).toBe(404);
             });
 
-            await test.step('AND an admin sees the status unchanged', async () => {
+            let adminToken: string;
+
+            await test.step('AND an admin token', async () => {
+                adminToken = await tokenFor(Roles.ADMIN);
+            });
+
+            await test.step('AND the admin sees the status unchanged', async () => {
                 const { status, body } = await apiRequest({
                     method: 'GET',
                     url: `${ApiEndpoints.INVOICES}/${seededInvoice.id}`,
                     baseUrl: requireEnv('API_URL'),
-                    headers: await tokenFor(Roles.ADMIN),
+                    headers: adminToken,
                 });
 
                 expect(status).toBe(200);
-                expect(InvoiceStatusSchema.parse(body).status).toBe(
+                expect(InvoiceStatusProjection.parse(body)).toBeTruthy();
+                expect(InvoiceStatusProjection.parse(body).status).toBe(
                     seededInvoice.status
                 );
             });

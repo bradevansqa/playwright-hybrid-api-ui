@@ -1,11 +1,17 @@
-import { z } from 'zod/v4';
 import { expect, test } from '../../../fixtures/pom/test-options';
 import { ApiEndpoints, PaymentMethods } from '../../../enums/app/app';
 import { Roles } from '../../../enums/util/roles';
 import { requireEnv } from '../../../helpers/util/requireEnv';
 import {
+    InvoicePageProjection,
+    InvoiceRef,
+    InvoiceTotalsProjection,
+} from '../../../fixtures/api/schemas/app/invoiceSchema';
+import {
+    BILLING_LOOKUP,
     CartLine,
     CatalogProduct,
+    closeInvoice,
     createCart,
     expectedTotals,
     ExpectedTotals,
@@ -23,25 +29,15 @@ import {
  * checkout wizard. Expected figures come from catalog prices via
  * `expectedTotals`, independently of both the cart page and the invoice.
  *
- * Each run places one real order per scenario; the Invoice API has no
- * DELETE, so these persist on the shared instance (see checkoutTotals.spec.ts).
+ * Each test places one real order. The Invoice API has no DELETE, so
+ * `afterEach` closes it (COMPLETED, set as admin and read back) -- see
+ * checkoutTotals.spec.ts. Invoices are parsed with the projections from
+ * invoiceSchema.ts (see its live-drift note).
+ *
+ * The scenarios run serially: the API can hand two orders placed at the same
+ * moment the same invoice number (see the numbering test in
+ * checkoutTotals.spec.ts), and this test finds its order by that number.
  */
-
-/** Billing lookup key; the app fills street, city and state from it. */
-const BILLING = { countryCode: 'NL', postcode: '1234AB', houseNumber: '12' };
-
-/** Minimal local schemas: only the fields this test consumes. */
-const InvoiceSearchSchema = z.looseObject({
-    data: z.array(
-        z.looseObject({ id: z.string(), invoice_number: z.string() })
-    ),
-});
-
-const InvoiceTotalSchema = z.looseObject({
-    id: z.string(),
-    subtotal: z.number(),
-    total: z.number(),
-});
 
 /** Which cart discount row a scenario shows, and which it must not. */
 type DiscountRow = 'combinationDiscount' | 'ecoDiscount';
@@ -53,7 +49,7 @@ const SCENARIOS: ReadonlyArray<{
     lines: (catalog: CatalogProduct[]) => CartLine[];
 }> = [
     {
-        description: 'an eco-friendly item, showing the 5% eco discount',
+        description: 'an eco-friendly item, showing the eco discount',
         shownDiscount: 'ecoDiscount',
         absentDiscount: 'combinationDiscount',
         lines: (catalog): CartLine[] => [
@@ -77,7 +73,7 @@ const SCENARIOS: ReadonlyArray<{
     },
     {
         description:
-            'a rental and a purchase, showing the 15% combination discount',
+            'a rental and a purchase, showing the combination discount',
         shownDiscount: 'combinationDiscount',
         absentDiscount: 'ecoDiscount',
         lines: (catalog): CartLine[] => [
@@ -102,7 +98,25 @@ const SCENARIOS: ReadonlyArray<{
 ];
 
 test.describe('checkout journey', () => {
+    test.describe.configure({ mode: 'serial' });
     test.use({ role: Roles.CUSTOMER });
+
+    /** Orders placed by the current test, closed again in afterEach. */
+    let createdInvoiceIds: string[] = [];
+
+    test.beforeEach(() => {
+        createdInvoiceIds = [];
+    });
+
+    test.afterEach(async ({ apiRequest, tokenFor }) => {
+        for (const invoiceId of createdInvoiceIds) {
+            const adminToken =
+                await test.step('GIVEN an admin token for cleanup', async () =>
+                    tokenFor(Roles.ADMIN));
+
+            await closeInvoice(apiRequest, adminToken, invoiceId);
+        }
+    });
 
     for (const scenario of SCENARIOS) {
         test(
@@ -111,13 +125,20 @@ test.describe('checkout journey', () => {
             async ({ checkoutPage, apiRequest, authToken }) => {
                 let lines: CartLine[];
                 let expected: ExpectedTotals;
+                let cartId: string;
                 let invoiceNumber: string;
+                let invoice: InvoiceRef;
 
-                await test.step('GIVEN a cart seeded via the API and handed to the browser', async () => {
+                await test.step('GIVEN products picked from the live catalog', async () => {
                     lines = scenario.lines(await fetchCatalog(apiRequest));
                     expected = expectedTotals(lines);
+                });
 
-                    const cartId = await createCart(apiRequest, lines);
+                await test.step('AND a cart seeded with them via the API', async () => {
+                    cartId = await createCart(apiRequest, lines);
+                });
+
+                await test.step('AND the cart handed to the browser', async () => {
                     await checkoutPage.useCart(
                         cartId,
                         lines.reduce(
@@ -132,22 +153,25 @@ test.describe('checkout journey', () => {
                 });
 
                 await test.step('THEN the cart lists each product at its catalog line price', async () => {
-                    await expect(checkoutPage.lineTitles).toHaveText(
-                        lines.map(({ product }) => product.name)
+                    await expect(checkoutPage.lineTitles).toHaveCount(
+                        lines.length
                     );
-                    await expect(checkoutPage.linePrices).toHaveText(
-                        lines.map(
-                            ({ product, quantity }) =>
-                                `$${roundToCents(product.price * quantity).toFixed(2)}`
-                        )
-                    );
+
+                    for (const { product, quantity } of lines) {
+                        await expect(
+                            checkoutPage.linePriceIn(
+                                checkoutPage.cartRow(product.name)
+                            )
+                        ).toHaveText(
+                            `$${roundToCents(product.price * quantity).toFixed(2)}`
+                        );
+                    }
                 });
 
                 await test.step('AND the subtotal, discount and total match the independent calculation', async () => {
                     await expect(checkoutPage.subtotal).toHaveText(
                         `$${expected.subtotal.toFixed(2)}`
                     );
-
                     // The two discounts never stack (see expectedTotals).
                     await expect(
                         checkoutPage[scenario.shownDiscount]
@@ -163,9 +187,9 @@ test.describe('checkout journey', () => {
                 await test.step('WHEN the customer completes sign-in, billing and payment', async () => {
                     await checkoutPage.proceedPastCartAndSignIn();
                     await checkoutPage.fillBillingByPostcode(
-                        BILLING.countryCode,
-                        BILLING.postcode,
-                        BILLING.houseNumber
+                        BILLING_LOOKUP.countryCode,
+                        BILLING_LOOKUP.postcode,
+                        BILLING_LOOKUP.houseNumber
                     );
                     await checkoutPage.payAndConfirm(
                         PaymentMethods.CASH_ON_DELIVERY
@@ -173,37 +197,43 @@ test.describe('checkout journey', () => {
                     invoiceNumber = await checkoutPage.confirmedInvoiceNumber();
                 });
 
-                await test.step('THEN the invoice the API holds charges the total the cart showed', async () => {
-                    const { status: searchStatus, body: searchBody } =
-                        await apiRequest({
-                            method: 'GET',
-                            url: `${ApiEndpoints.INVOICES_SEARCH}?q=${invoiceNumber}`,
-                            baseUrl: requireEnv('API_URL'),
-                            headers: authToken,
-                        });
-
-                    expect(searchStatus).toBe(200);
-                    const match = InvoiceSearchSchema.parse(
-                        searchBody
-                    ).data.find(
-                        (invoice) => invoice.invoice_number === invoiceNumber
-                    );
-                    expect(
-                        match,
-                        `Invoice ${invoiceNumber} not found for the customer`
-                    ).toBeDefined();
-
+                await test.step('THEN the confirmed invoice number belongs to the customer', async () => {
                     const { status, body } = await apiRequest({
                         method: 'GET',
-                        url: `${ApiEndpoints.INVOICES}/${match!.id}`,
+                        url: `${ApiEndpoints.INVOICES_SEARCH}?q=${invoiceNumber}`,
                         baseUrl: requireEnv('API_URL'),
                         headers: authToken,
                     });
 
                     expect(status).toBe(200);
-                    const invoice = InvoiceTotalSchema.parse(body);
-                    expect(invoice.subtotal).toBe(expected.subtotal);
-                    expect(invoice.total).toBe(expected.total);
+                    expect(InvoicePageProjection.parse(body)).toBeTruthy();
+                    const matches = InvoicePageProjection.parse(
+                        body
+                    ).data.filter(
+                        (candidate) =>
+                            candidate.invoice_number === invoiceNumber
+                    );
+                    expect(
+                        matches,
+                        `Expected exactly one invoice ${invoiceNumber} for the customer -- more than one means another order got the same number (see the numbering test in checkoutTotals.spec.ts)`
+                    ).toHaveLength(1);
+                    invoice = matches[0];
+                    createdInvoiceIds.push(invoice.id);
+                });
+
+                await test.step('AND it charges exactly the total the cart showed', async () => {
+                    const { status, body } = await apiRequest({
+                        method: 'GET',
+                        url: `${ApiEndpoints.INVOICES}/${invoice.id}`,
+                        baseUrl: requireEnv('API_URL'),
+                        headers: authToken,
+                    });
+
+                    expect(status).toBe(200);
+                    expect(InvoiceTotalsProjection.parse(body)).toBeTruthy();
+                    const totals = InvoiceTotalsProjection.parse(body);
+                    expect(totals.subtotal).toBe(expected.subtotal);
+                    expect(totals.total).toBe(expected.total);
                 });
             }
         );

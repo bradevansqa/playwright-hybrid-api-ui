@@ -3,7 +3,16 @@ import { z } from 'zod/v4';
 import type { output as zOutput } from 'zod/v4';
 import { apiRequest } from '../api/plain-function';
 import { test as roleTest } from '../role/role-fixture';
-import { ApiEndpoints, PaymentMethods } from '../../enums/app/app';
+import {
+    ApiEndpoints,
+    ApiEndpointSuffixes,
+    PaymentMethods,
+} from '../../enums/app/app';
+import {
+    CartCreatedResponseSchema,
+    CartItemAddedResponseSchema,
+} from '../api/schemas/app/cartSchema';
+import { PostcodeLookupResponseSchema } from '../api/schemas/app/postcodeSchema';
 import { Roles } from '../../enums/util/roles';
 
 /**
@@ -69,28 +78,14 @@ import { Roles } from '../../enums/util/roles';
  * schemas are intentionally strict and reject live responses by design, so
  * this fixture deliberately does not reuse them here.
  */
-const CartCreatedResponseSchema = z.strictObject({
-    id: z.string(),
-});
-
-const CartItemAddedResponseSchema = z.strictObject({
-    result: z.string(),
-});
-
-/**
- * The invoice API rejects a billing address whose city/country don't agree
- * (an undocumented cross-field check, not listed on `InvoiceRequest`) --
- * looking up a real address via this endpoint guarantees a self-consistent
- * pair instead of guessing one.
+/*
+ * Cart and postcode-lookup responses use the shared strict schemas in
+ * fixtures/api/schemas/app/ (cartSchema.ts, postcodeSchema.ts). The invoice
+ * API rejects a billing address whose city/country don't agree (an
+ * undocumented cross-field check, not listed on `InvoiceRequest`) --
+ * looking up a real address guarantees a self-consistent pair instead of
+ * guessing one.
  */
-const PostcodeLookupResponseSchema = z.strictObject({
-    street: z.string(),
-    house_number: z.string(),
-    city: z.string(),
-    state: z.string(),
-    country: z.string(),
-    postcode: z.string(),
-});
 
 const ProductListResponseSchema = z.looseObject({
     data: z.array(z.looseObject({ id: z.string() })),
@@ -203,6 +198,7 @@ export const test = roleTest.extend<HelperFixtures>({
         });
 
         expect(addressStatus).toBe(200);
+        expect(PostcodeLookupResponseSchema.parse(addressBody)).toBeTruthy();
         const address = PostcodeLookupResponseSchema.parse(addressBody);
 
         const { status: invoiceStatus, body: invoiceBody } = await apiRequest({
@@ -248,7 +244,7 @@ export const test = roleTest.extend<HelperFixtures>({
         const { status: revertStatus, body: revertBody } = await apiRequest({
             request,
             method: 'PUT',
-            url: `${ApiEndpoints.INVOICES}/${invoice.id}/status`,
+            url: `${ApiEndpoints.INVOICES}/${invoice.id}${ApiEndpointSuffixes.STATUS}`,
             baseUrl: process.env.API_URL,
             headers: adminToken,
             body: {
