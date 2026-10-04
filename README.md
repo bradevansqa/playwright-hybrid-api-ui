@@ -22,7 +22,8 @@ Building this suite uncovered real defects in the application under test. Each o
 | **Address accepts an empty array.** `address` is documented as an object, but `[]` is accepted at registration. | Low | [registration.spec.ts](tests/app/api/registration.spec.ts) |
 | **Contract drift.** Every live invoice breaks the OpenAPI `InvoiceResponse`: undocumented `payment` and `eco_discount_*` fields, `null` in fields documented as numbers or strings, and a missing `is_location_offer`. | Low (docs/API mismatch) | [invoice.spec.ts](tests/app/api/invoice.spec.ts) |
 | **Undocumented status codes.** Role-protected endpoints return 403 to customers, and registration returns 422 for validation errors and duplicate emails, but the OpenAPI spec lists neither. | Low (docs) | [roleAccess.spec.ts](tests/app/api/roleAccess.spec.ts), [registration.spec.ts](tests/app/api/registration.spec.ts) |
-| **Wrong session returned on login.** Intermittently, a customer UI login comes back with the admin's session. Investigated and guarded against; see [Known limitations](#known-limitations). | Unknown (server-side) | [createStorageState.ts](helpers/app/createStorageState.ts) |
+
+One suspected server bug turned out to be mine. Customer logins intermittently came back with the admin's session, and the suite's identity check caught it. On a self-hosted instance it reproduced on every run, which showed the cause: the browser context used for logging in inherited the admin's saved session from the previous run, through the test's `storageState` option. The fix is one line in [createStorageState.ts](helpers/app/createStorageState.ts); the identity check stays.
 
 ---
 
@@ -100,6 +101,7 @@ On top of the scaffold (about 2,200 lines across 35 files):
   - Checkout totals through the API: each pricing rule checked against an independent calculation, plus simultaneous orders
   - Checkout end to end: the cart page, the checkout wizard and the resulting invoice must all agree
 - **CI.** Credentials moved to GitHub secrets, with a second account for role tests. Vendored skill files are pinned to LF line endings so the integrity check is stable on Windows.
+- **Self-hosted Toolshop.** [docker/toolshop](docker/toolshop/docker-compose.yml) and [toolshop.sh](scripts/toolshop.sh) start a private, freshly seeded copy of the app, and a second CI job runs the full suite, UI included, against it.
 
 ---
 
@@ -239,23 +241,54 @@ npm run test:ui           # time-travel debugging
 npm run report            # open the HTML report
 ```
 
+### Against a self-hosted Toolshop (Docker)
+
+Runs the suite against a private copy of the app instead of the shared public site: freshly seeded data, no Cloudflare, nothing left behind. Needs Docker; the first start pulls about 500 MB.
+
+```bash
+npm run toolshop:up       # start, seed, and wait until the API (:8091) and UI (:4200) answer
+npm run toolshop:reset    # wipe and reseed between runs
+npm run toolshop:down     # stop and delete everything
+```
+
+Create `env/.env.local` with the seeded accounts (upstream's documented defaults), then run with `ENVIRONMENT=local`:
+
+```bash
+APP_URL=http://localhost:4200
+API_URL=http://localhost:8091
+APP_EMAIL=admin@practicesoftwaretesting.com
+APP_PASSWORD=welcome01
+CUSTOMER_EMAIL=customer@practicesoftwaretesting.com
+CUSTOMER_PASSWORD=welcome01
+CUSTOMER2_EMAIL=customer2@practicesoftwaretesting.com
+CUSTOMER2_PASSWORD=welcome01
+```
+
+```bash
+ENVIRONMENT=local npx playwright test
+```
+
+The image is sprint 5, the build the public site runs. `SPRINT=sprint5-with-bugs npm run toolshop:up` starts upstream's bug-seeded build instead, for exploring only: it is an older API contract (integer ids, `0`/`1` booleans, a flat address, no carts), so most of this suite fails on schema parsing there. Upstream's licence allows practice use but not public hosting, so keep it local.
+
 ---
 
 ## Known limitations
 
-**CI runs API tests only.** The public Toolshop instance is behind Cloudflare bot protection, which challenges datacenter IPs including GitHub's runners. The full suite runs locally.
+**Public-site CI runs API tests only.** The public Toolshop instance is behind Cloudflare bot protection, which challenges datacenter IPs including GitHub's runners. The full suite runs in the Docker CI job instead.
 
-**Cleanup is partial.** The Invoice API has no DELETE endpoint, so test invoices can't be removed. Seeded invoices have their status reverted, and orders placed by the checkout tests are closed (set to COMPLETED) after each test. Both stay on the shared instance.
+**Cleanup is partial on the public site.** The Invoice API has no DELETE endpoint, so test invoices can't be removed. Seeded invoices have their status reverted, and orders placed by the checkout tests are closed (set to COMPLETED) after each test. Both stay on the shared instance. On Docker, a reseed removes everything.
 
-**Shared state.** Tests run against a public instance other people also use, so data may change between runs.
+**Shared state.** Tests on the public site run against an instance other people also use, so data may change between runs.
 
-**Logins can return the wrong user's session.** In roughly one full-suite run in three, a UI login with the customer's credentials comes back as the admin. It reproduces with a burst of concurrent admin logins alongside a single customer UI login. It does not reproduce with concurrent API-only logins, and the login response is sent `no-cache, private`, so it is not a simple edge cache. The root cause can't be diagnosed without server access. Setup therefore checks each session's email against the expected role and fails loudly rather than giving customer specs an admin session. Expect an occasional red setup on a full run; re-run it. On some days it is worse: it has also reproduced with one worker and no other logins running, so the timing on the server side matters more than this suite's own concurrency.
+**The Docker image lags the public site.** The newest published image labels the payment button "Confirm" for both of its clicks, where the public site says "Check payment" first. The page object locates that button by its `data-test` id, which both share.
+
+**The duplicate-invoice test can be flaky on Docker.** It depends on a race. Sent straight to the API, simultaneous orders collided in every batch tried, but the self-hosted API serves at most five requests at once. When other tests occupy those slots, the test's orders can queue up and miss each other, so the expected failure doesn't happen. That is most likely in parallel runs, but it has also happened once on one worker, where CI's retry reproduced the bug and reported the test as flaky.
 
 ---
 
 ## Planned
 
-- Self-hosted Toolshop via Docker Compose in CI: deterministic state and full-suite coverage, and a place to run the registration 201 test, which is skipped on the shared site because accounts can't be deleted
+- Run the registration 201 test against Docker only. It is skipped because accounts can't be deleted on the shared site.
 
 ---
 

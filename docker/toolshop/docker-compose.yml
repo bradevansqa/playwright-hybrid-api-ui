@@ -1,0 +1,59 @@
+# Self-hosted Toolshop for deterministic, full-suite runs (local and CI).
+#
+# Adapted from upstream's docker-compose.prod.yml
+# (https://github.com/testsmith-io/practice-software-testing), with:
+#   - the sprint selectable via SPRINT, defaulting to sprint5 -- the build the
+#     public site runs and the suite's schemas mirror. sprint5-with-bugs is an
+#     older API contract (integer ids, 0/1 booleans, flat address, no carts),
+#     so most of the suite fails on parse there; use it for exploration only:
+#     SPRINT=sprint5-with-bugs bash scripts/toolshop.sh up
+#   - API/UI image tags pinned (the web image is only published as `latest`)
+#   - the cron service dropped: its scheduled jobs (e.g. invoice:remove) would
+#     mutate data mid-run
+#   - only the UI (4200) and API (8091) published to the host
+#
+# Licence: upstream permits practice use but forbids "commercial use, public
+# hosting, redistribution". Run it locally or in CI only — never expose it.
+#
+# Driven by scripts/toolshop.sh (npm run toolshop:up / :reset / :down).
+
+name: toolshop
+
+services:
+    laravel-api:
+        image: testsmith/practice-software-testing-${SPRINT:-sprint5}-api:2.5
+        environment:
+            - 'PHP_OPCACHE_VALIDATE_TIMESTAMPS=1'
+            - 'DB_PORT=3306'
+            - 'DB_HOST=mariadb'
+            - 'host=localhost'
+            - 'DISABLE_LOGGING=true'
+        volumes:
+            - laravel-app-code:/var/www
+        depends_on:
+            - mariadb
+
+    angular-ui:
+        image: testsmith/practice-software-testing-${SPRINT:-sprint5}-ui:2.5
+        ports:
+            - '4200:4200'
+        command: >
+            bash -c "ng serve --host 0.0.0.0 --port 4200"
+
+    web:
+        image: testsmith/practice-software-testing-web:latest
+        ports:
+            - '8091:80'
+        depends_on:
+            - laravel-api
+
+    mariadb:
+        image: yobasystems/alpine-mariadb:10.6.11
+        environment:
+            MYSQL_ROOT_PASSWORD: root
+            MYSQL_USER: user
+            MYSQL_PASSWORD: root
+            MYSQL_DATABASE: toolshop
+
+volumes:
+    laravel-app-code:

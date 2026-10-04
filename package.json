@@ -1,6 +1,6 @@
 {
     "name": "playwright-hybrid-api-ui",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "private": true,
     "description": "playwright-hybrid-api-ui — Playwright test automation, scaffolded by create-agentic-playwright.",
     "scripts": {
@@ -19,6 +19,9 @@
         "test:e2e": "npx playwright test --grep @e2e --project=chromium",
         "test:destructive": "npx playwright test --grep @destructive --project=chromium --workers=1",
         "report": "npx playwright show-report",
+        "toolshop:up": "bash scripts/toolshop.sh up",
+        "toolshop:reset": "bash scripts/toolshop.sh reset",
+        "toolshop:down": "bash scripts/toolshop.sh down",
         "lint": "npx eslint .",
         "lint:fix": "npx eslint . --fix",
         "format": "npx prettier --write .",

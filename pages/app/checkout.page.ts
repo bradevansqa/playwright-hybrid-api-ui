@@ -88,12 +88,15 @@ export class CheckoutPage {
         return this.page.getByRole('combobox', { name: 'Payment Method' });
     }
 
-    get checkPaymentButton(): Locator {
-        return this.page.getByRole('button', { name: 'Check payment' });
-    }
-
-    get confirmButton(): Locator {
-        return this.page.getByRole('button', { name: 'Confirm' });
+    /**
+     * One button for both payment clicks: the first checks the payment, the
+     * second places the order. Its label is unstable across builds -- the
+     * public site says "Check payment" then "Confirm", while the published
+     * sprint5 2.5 image (docker/toolshop) says "Confirm" for both -- so it is
+     * located by its `data-test` id, which every build shares.
+     */
+    get finishButton(): Locator {
+        return this.page.getByTestId('finish');
     }
 
     // ==================== Feedback Locators ====================
@@ -222,9 +225,9 @@ export class CheckoutPage {
      */
     async payAndConfirm(method: PaymentMethods): Promise<void> {
         await this.paymentMethodSelect.selectOption(method);
-        await this.checkPaymentButton.click();
+        await this.finishButton.click();
         await expect(this.paymentSuccessMessage).toBeVisible();
-        await this.confirmButton.click();
+        await this.finishButton.click();
         await expect(this.orderConfirmation).toBeVisible();
     }
 

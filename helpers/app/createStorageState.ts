@@ -24,15 +24,20 @@ import {
  * Each role gets its own file (see `storageStatePathFor`); the `role` fixture
  * picks the right one, so a spec switches role with a single `test.use()`.
  *
- * The session's identity is confirmed against the role's own email *before*
- * anything is written, because the shared demo instance has been observed
- * handing a browser the wrong user's session: roughly one full-suite run in
- * three, a login submitting the customer's credentials came back as the admin
- * (reproduced with a burst of concurrent admin logins alongside a single
- * customer UI login). Writing that file would quietly hand every
- * `role: CUSTOMER` spec an admin session, so the check fails setup instead --
- * loudly, and with nothing mislabelled left on disk for the next run to pick
- * up.
+ * The browser context starts from an explicitly empty storage state. Inside a
+ * Playwright test, a hand-made `browser.newContext()` still inherits the
+ * test's `storageState` option, and the `role` fixture resolves that to the
+ * admin's file from the previous run (setup runs as the default role). A
+ * customer login then opened the app already signed in as the admin, and the
+ * saved "customer" session was the admin's. This was long mistaken for a
+ * server bug; it was traced on a self-hosted instance, where it reproduced on
+ * every run.
+ *
+ * The session's identity is still confirmed against the role's own email
+ * *before* anything is written: writing a wrong session would quietly hand
+ * every `role: CUSTOMER` spec an admin session, so the check fails setup
+ * instead -- loudly, and with nothing mislabelled left on disk for the next
+ * run to pick up.
  *
  * @param {AuthenticatedRole} [role=Roles.ADMIN] - Role to log in as.
  * @returns {Promise<void>} Resolves when storage state is saved.
@@ -53,7 +58,10 @@ export async function createAppStorageState(
     // finally, not a trailing close(): the identity check below is meant to
     // throw, and a failed login can too -- neither should leak a browser.
     try {
-        const context = await browser.newContext();
+        // Empty, never inherited: see the JSDoc above.
+        const context = await browser.newContext({
+            storageState: { cookies: [], origins: [] },
+        });
         const page = await context.newPage();
         const appPage = new AppPage(page);
 
@@ -77,7 +85,7 @@ export async function createAppStorageState(
 
         expect(
             session.email,
-            `Logged in as "${email}" for role "${role}", but the resulting session belongs to "${session.email}". The shared Toolshop instance can hand back another user's session under concurrent logins -- no storage state was written. Re-run; if it persists, the instance is the suspect, not this suite.`
+            `Logged in as "${email}" for role "${role}", but the resulting session belongs to "${session.email}". No storage state was written. Check that this context did not inherit another session (see the JSDoc on createAppStorageState).`
         ).toBe(email);
 
         await context.storageState({ path: storageStatePathFor(role) });

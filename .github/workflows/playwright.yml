@@ -5,14 +5,18 @@ name: Playwright Tests
 # not secrets. When you adapt this scaffold to your own application, move
 # real credentials into repository secrets: ${{ secrets.APP_PASSWORD }} etc.
 #
-# CI runs the API tests only (--grep @api --no-deps): the demo site's UI sits
-# behind Cloudflare bot protection, which challenges datacenter IPs like
-# GitHub's runners. The full suite (UI included) runs green locally — swap the
-# grep out when you point this scaffold at your own application.
+# Two jobs:
+#   test         -- the API project against the public site. Its UI sits
+#                   behind Cloudflare bot protection, which challenges
+#                   datacenter IPs like GitHub's runners, so no UI tests here.
+#   test-docker  -- the full suite (setup, API and UI) against a self-hosted
+#                   Toolshop started from docker/toolshop/docker-compose.yml
+#                   and freshly seeded, so state is deterministic. Its
+#                   credentials are the seed's documented defaults.
 #
-# Not a required branch check: the suite depends on a third-party demo API,
-# and its downtime should not block merges (skill-lint and the template
-# smoke test are the deterministic gates).
+# Not a required branch check: `test` depends on a third-party demo API, and
+# its downtime should not block merges (skill-lint and the template smoke
+# test are the deterministic gates).
 
 on:
     push:
@@ -71,5 +75,64 @@ jobs:
               if: failure()
               with:
                   name: playwright-report
+                  path: playwright-report/
+                  retention-days: 14
+
+    test-docker:
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            ENVIRONMENT: local
+            APP_URL: http://localhost:4200
+            API_URL: http://localhost:8091
+            # Seeded accounts documented by upstream Toolshop -- local only.
+            APP_EMAIL: admin@practicesoftwaretesting.com
+            APP_PASSWORD: welcome01
+            CUSTOMER_EMAIL: customer@practicesoftwaretesting.com
+            CUSTOMER_PASSWORD: welcome01
+            CUSTOMER2_EMAIL: customer2@practicesoftwaretesting.com
+            CUSTOMER2_PASSWORD: welcome01
+        steps:
+            - uses: actions/checkout@v7
+
+            - name: Start and seed Toolshop
+              run: bash scripts/toolshop.sh up
+
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 20
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Write env file from workflow env
+              run: |
+                  mkdir -p env
+                  {
+                    echo "APP_URL=$APP_URL"
+                    echo "API_URL=$API_URL"
+                    echo "APP_EMAIL=$APP_EMAIL"
+                    echo "APP_PASSWORD=$APP_PASSWORD"
+                    echo "CUSTOMER_EMAIL=$CUSTOMER_EMAIL"
+                    echo "CUSTOMER_PASSWORD=$CUSTOMER_PASSWORD"
+                    echo "CUSTOMER2_EMAIL=$CUSTOMER2_EMAIL"
+                    echo "CUSTOMER2_PASSWORD=$CUSTOMER2_PASSWORD"
+                  } > env/.env.local
+
+            - name: Install Playwright browser
+              run: npx playwright install --with-deps chromium
+
+            - name: Run Playwright tests (full suite)
+              run: npx playwright test
+
+            - name: Toolshop logs
+              if: failure()
+              run: docker compose -f docker/toolshop/docker-compose.yml logs --tail=200
+
+            - uses: actions/upload-artifact@v7
+              if: failure()
+              with:
+                  name: playwright-report-docker
                   path: playwright-report/
                   retention-days: 14

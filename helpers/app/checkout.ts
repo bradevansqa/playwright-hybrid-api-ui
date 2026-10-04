@@ -256,9 +256,8 @@ export async function placeOrder(
  * COMPLETED status (as admin), then read it back to confirm the change was
  * persisted rather than trusting the PUT's own response.
  *
- * The token's identity is confirmed first: the shared instance can hand back
- * another user's session on login (README, Known limitations), and a
- * customer token would make the read-back fail with a misleading 404.
+ * The token's identity is confirmed first: a customer token would make the
+ * read-back fail with a misleading 404 rather than a clear identity error.
  *
  * @param {ApiRequestFn} apiRequest - The apiRequest fixture.
  * @param {string} adminToken - An admin bearer token.
